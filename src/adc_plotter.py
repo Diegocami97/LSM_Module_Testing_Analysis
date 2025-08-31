@@ -69,7 +69,7 @@ def plot_trace(df_list, V0_list=0, t0_list=0, delta_t=300, title_="ADC Trace", l
     sig_colors = ['forestgreen', 'seagreen', 'springgreen', 'darkseagreen']
     adc_colors = ['dimgrey', 'slategray' , 'CornflowerBlue', 'dodgerblue']
     
-    plt.figure(figsize=(20, 5))
+    plt.figure(figsize=(10, 5))
 
     for i, (df, t0, V0) in enumerate(zip(df_list, t0_list, V0_list)):
         # clipping time is convulted but is need to properly line up
@@ -226,8 +226,13 @@ if __name__ == '__main__':
     if not args.compare:
         for f in args.fname:
             adc_plotter(f, args.trace, args.psd, args.V0, args.t0, args.delta_t)
-            outname = os.path.splitext(f)[0] + ".png"
+            # different file extensions just for the work flow...
+            if args.trace==True and args.psd==False:
+                outname = os.path.splitext(f)[0] + ".pdf" 
+            if args.trace==False and args.psd==True:
+                outname = os.path.splitext(f)[0] + ".png"
             plt.savefig(outname, dpi=300, bbox_inches="tight")
+
             plt.close()   # prevents figures from piling up
     else:
         adc_plotter_compare(args.fname, args.trace, args.psd, args.V0, args.t0, args.delta_t)
