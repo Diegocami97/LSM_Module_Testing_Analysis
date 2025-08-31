@@ -55,7 +55,7 @@ def subtract_pedestal(data, clip_sigma=5.0, max_iter=2):
 
     noise = robust_noise_from_overscan(subtracted, overscan_start,
                                        clip_sigma=clip_sigma, max_iter=max_iter)
-    print("Noise [ADU] (robust):", round(noise, 2))
+    print("Noise [ADU]:", round(noise, 2))
     return subtracted
 
 # def subtract_pedestal(data):
@@ -277,7 +277,7 @@ def compute_colpanel_yrange(median_images, prescan, overscan_start,
 
 
 
-def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_ylim):
+def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_ylim, output_dir = '.'):
     fig, axs = plt.subplots(2, 2, figsize=(18, 12))
     axs = axs.flatten()
 
@@ -348,13 +348,14 @@ def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_yl
 
     fig.suptitle(f'Column Defect Maps – {ccd_image_name}', fontweight="bold")
     plt.tight_layout()
-    plt.savefig(f"{ccd_image_name}.png", dpi=300)
+    plt.savefig(output_dir / f"{ccd_image_name}.png", dpi=300)
     plt.close()
 
 def main():
     # argparse interface
     parser = argparse.ArgumentParser(description="Compose CCD median images from multiple FZ files")
     parser.add_argument("--files", nargs="+", required=True, help="Input .fz files (space-separated)")
+    parser.add_argument("--output_dir", required=True, help="Path for output directory.")
     parser.add_argument("--module", required=True, help="Module name (used for outputs: <module>.png and <module>.log)")
     args = parser.parse_args()
 
@@ -373,6 +374,7 @@ def main():
 
     ccd_image_name = args.module
 
+    output_dir = Path(args.output_dir)
     median_images, median_noises = compute_median_images(fz_files)
     images = [(median_images[i], i + 1, median_noises[i]) for i in range(4)]
     # NEW: dynamic display range over the 4 composites
@@ -384,9 +386,9 @@ def main():
                                            pct_low=0.5, pct_high=99.5)
 
 
-    log_file_path = Path(f"{ccd_image_name}.log")
+    log_file_path = Path(output_dir / f"{ccd_image_name}.log")
     with log_file_path.open('w') as log_file:
-        save_image_detailed(images, ccd_image_name, log_file, vmin, vmax, (ymin_cm, ymax_cm))
+        save_image_detailed(images, ccd_image_name, log_file, vmin, vmax, (ymin_cm, ymax_cm), output_dir=output_dir)
 
    
 

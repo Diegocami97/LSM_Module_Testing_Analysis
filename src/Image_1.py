@@ -3,6 +3,7 @@ import numpy as np
 from astropy.io import fits
 from skimage import filters, measure, morphology
 from skimage.transform import probabilistic_hough_line
+from pathlib import Path
 import argparse
 import os
 
@@ -81,7 +82,8 @@ def main():
     # ---------------- Argument parsing ----------------
     parser = argparse.ArgumentParser(description="CCD plot generator")
     parser.add_argument("--files", required=True, help="Input FITS/FZ file")
-    parser.add_argument("--module", required=True, help="Module name for output file")
+    parser.add_argument("--output_dir", required=True, help="Path for output directory.")
+    parser.add_argument("--module", required=True, help="CCD Module name for output file")
     args = parser.parse_args()
 
     fits_file = args.files
@@ -125,11 +127,12 @@ def main():
     cbar.ax.tick_params(labelsize=12)
 
     # Save with module name
-    out_png = f"{module_name}.png"
-    out_pdf = f"{module_name}.pdf"
+    output_dir = Path(args.output_dir)   # <-- make it a Path
+    out_png = output_dir / f"{module_name}.png"
+    out_pdf = output_dir / f"{module_name}.pdf"
     plt.savefig(out_png, dpi=300, bbox_inches='tight')
     plt.savefig(out_pdf, bbox_inches='tight')
-    plt.show()
+    # plt.show()
 
 if __name__ == "__main__":
     main()

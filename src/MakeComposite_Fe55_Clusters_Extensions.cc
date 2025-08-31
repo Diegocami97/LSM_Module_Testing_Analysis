@@ -574,7 +574,8 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
 // ---------------------- main entry point ----------------------------
 void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt",
                                  const int   image_number=4,
-                                 const char* moduleUsed="DMXX")
+                                 const char* moduleUsed="DMXX",
+                                 const char* outDir="out")
 {
   // Read list and bucket by extension
   std::ifstream fin(filelist);
@@ -594,7 +595,7 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
 
   // Output root folder: out/<Module>/<leaf of listfile>
   TString leaf = BaseLeaf(filelist);
-  TString baseTag = Form("Out_Plots/%s/%s", moduleUsed, leaf.Data());
+  TString baseTag = Form("%s/Fe_55_Analysis_Plots/%s/%s", outDir, moduleUsed, leaf.Data());
   EnsureDir(baseTag);
   EnsureDir(baseTag + "/compare");
 

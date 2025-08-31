@@ -158,7 +158,7 @@ def compute_colpanel_yrange(images, pct_low=0.5, pct_high=99.5, pad_frac=0.05):
     return float(ymin - pad), float(ymax + pad)
 
 # ---------------- plotting ----------------
-def process_fz_and_plot_all_channels(fz_file, ccd_name, pct_low=0.5, pct_high=99.5):
+def process_fz_and_plot_all_channels(fz_file, ccd_name, pct_low=0.5, pct_high=99.5,output_dir='.'):
     # First pass: load, subtract, collect images + per-channel noise
     images, noises = [], []
     with fits.open(fz_file) as hdul:
@@ -173,7 +173,7 @@ def process_fz_and_plot_all_channels(fz_file, ccd_name, pct_low=0.5, pct_high=99
     ymin_cm, ymax_cm = compute_colpanel_yrange(images, pct_low, pct_high)
 
     # Prepare log
-    log_path = f"{ccd_name}.log"
+    log_path = output_dir / f"{ccd_name}.log"
     log_file = open(log_path, "w")
 
     # Plot with shared scales
@@ -236,7 +236,7 @@ def process_fz_and_plot_all_channels(fz_file, ccd_name, pct_low=0.5, pct_high=99
 
     fig.suptitle(f'Serial Register Defect Maps – {ccd_name}', fontsize=16, fontweight="bold")
     plt.tight_layout(rect=[0, 0, 0.96, 0.95])
-    outname = f"{ccd_name}.png"
+    outname = output_dir / f"{ccd_name}.png"
     plt.savefig(outname, dpi=300)
     plt.close()
     print(f"[SAVED] {outname}")
@@ -246,6 +246,7 @@ def process_fz_and_plot_all_channels(fz_file, ccd_name, pct_low=0.5, pct_high=99
 def main():
     parser = argparse.ArgumentParser(description="Plot 4-channel CCD views with robust scales")
     parser.add_argument("--files", required=True, help="Input .fz FITS file")
+    parser.add_argument("--output_dir", required=True, help="Path for output directory.")
     parser.add_argument("--module", required=True, help="Module/CCD label for outputs (<module>.png/.log)")
     parser.add_argument("--pct-low", type=float, default=0.5, help="Lower percentile for display ranges")
     parser.add_argument("--pct-high", type=float, default=99.5, help="Upper percentile for display ranges")
@@ -256,8 +257,9 @@ def main():
         print(f"[ERROR] File not found: {fz_file}")
         raise SystemExit(1)
 
+    output_dir = Path(args.output_dir)
     process_fz_and_plot_all_channels(str(fz_file), args.module,
-                                     pct_low=args.pct_low, pct_high=args.pct_high)
+                                     pct_low=args.pct_low, pct_high=args.pct_high, output_dir=output_dir)
     print("[DONE] Combined plot and log generated.")
 
 if __name__ == "__main__":
