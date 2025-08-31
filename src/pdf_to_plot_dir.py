@@ -7,7 +7,11 @@ import argparse
 from natsort import natsorted
 import os
 
+<<<<<<< HEAD
 def plot_pdf(pdf_paths, ccd_name, output_dir):
+=======
+def plot_pdf(pdf_paths, ccd_name):
+>>>>>>> 036bf63194cdd454db21f90d74e7897bea0f4a09
     fig, axs = plt.subplots(2, 2, figsize=(18, 12))
     axs = axs.flatten()
     
@@ -24,15 +28,24 @@ def plot_pdf(pdf_paths, ccd_name, output_dir):
         ax.set_title(pdf_path.split('/')[-1],fontweight='bold',fontsize=10)
     
     plt.tight_layout()
+<<<<<<< HEAD
     plt.savefig(output_dir + '/' + f'{ccd_name}.png', dpi=600)
+=======
+    plt.savefig(f'{ccd_name}.png', dpi=600)
+>>>>>>> 036bf63194cdd454db21f90d74e7897bea0f4a09
     plt.close()
 
 def main():
     parser = argparse.ArgumentParser(description="Process and plot PDF files.")
     parser.add_argument('--files', nargs=4, metavar='PDF', help="Specify 4 individual PDF files.")
+<<<<<<< HEAD
     parser.add_argument('--input_dir', type=str, help="Directory containing PDF files.")
     parser.add_argument('--output_dir', type=str, help="Path for output directory.")
     parser.add_argument('--module', type=str, help="Name of the CCD module for output image.")
+=======
+    parser.add_argument('--directory', type=str, help="Directory containing PDF files.")
+    parser.add_argument('ccd_name', type=str, help="Name of the CCD for output image.")
+>>>>>>> 036bf63194cdd454db21f90d74e7897bea0f4a09
     
     args = parser.parse_args()
 
@@ -45,9 +58,15 @@ def main():
         for pdf_path in pdf_paths:
             if not pdf_path.exists():
                 sys.exit(f"File {pdf_path} does not exist.")
+<<<<<<< HEAD
     elif args.input_dir:
         # Get all PDFs from the directory, limit to 4
         pdf_dir = Path(args.input_dir)
+=======
+    elif args.directory:
+        # Get all PDFs from the directory, limit to 4
+        pdf_dir = Path(args.directory)
+>>>>>>> 036bf63194cdd454db21f90d74e7897bea0f4a09
         if not pdf_dir.exists() or not pdf_dir.is_dir():
             sys.exit(f"Directory {pdf_dir} does not exist or is not a directory.")
         pdf_paths = []
@@ -62,7 +81,11 @@ def main():
         sys.exit("You must provide either 4 PDF files or a directory with PDFs.")
 
     # Plot the PDFs
+<<<<<<< HEAD
     plot_pdf(pdf_paths, args.module,args.output_dir)
+=======
+    plot_pdf(pdf_paths, args.ccd_name)
+>>>>>>> 036bf63194cdd454db21f90d74e7897bea0f4a09
 
 if __name__ == "__main__":
     main()

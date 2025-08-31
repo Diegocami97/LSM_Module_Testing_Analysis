@@ -5,7 +5,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import argparse
 from pathlib import Path
 from scipy import stats
-
+import sys
 # Configuration constants
 overscan_start = 6152
 y_overscan_start = 1536

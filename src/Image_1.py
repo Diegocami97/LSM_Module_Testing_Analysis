@@ -132,6 +132,7 @@ def main():
     out_pdf = output_dir / f"{module_name}.pdf"
     plt.savefig(out_png, dpi=300, bbox_inches='tight')
     plt.savefig(out_pdf, bbox_inches='tight')
+    # plt.savefig(out_pdf, bbox_inches='tight')
     # plt.show()
 
 if __name__ == "__main__":
