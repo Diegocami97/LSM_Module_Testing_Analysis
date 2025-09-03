@@ -26,6 +26,8 @@
 #include "TString.h"
 #include "TMath.h"
 #include "TPad.h"
+#include "TImage.h"
+
 
 // --- For cling vector dictionaries ---
 #ifdef __CLING__
@@ -36,7 +38,8 @@
 #endif
 
 // -------------------------- Config ---------------------------------
-static const int    NBINS_COMP   = 401;     // composite grid bins per axis
+int    NBINS_COMP_X   = 401;     // composite grid bins per axis
+int    NBINS_COMP_Y   = 401;     // composite grid bins per axis
 static const double RANGE_COMP   = 4.0;     // +/- range (pixels)
 static const int    BINS_PER_PIX = 25;      // sampling density for pixel maps
 static const double E_PER_ADU    = 3.8;     // eV->ADU scaling used in printouts
@@ -47,6 +50,14 @@ static const double SIGMA_FRONT_CUT = 0.8;  // front/back cut
 // --------------------- Small helpers --------------------------------
 static inline void EnsureDir(const TString& path){
   gSystem->mkdir(path, kTRUE);
+}
+
+void SaveCanvasHiRes(TCanvas* c, const TString& base, int W=4800, int H=3200) {
+  gSystem->mkdir(gSystem->DirName(base), kTRUE);
+  std::unique_ptr<TImage> img(TImage::Create());
+  img->FromPad(c, W, H);                // re-render at W×H
+  img->WriteImage((base + ".png").Data());
+  c->SaveAs((base + ".png").Data());    // crisp vector copy
 }
 
 static inline TString BaseLeaf(const char* path){
@@ -196,13 +207,21 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
   chain.SetBranchAddress("fSTD_Y",   &rmsy);
   chain.SetBranchAddress("Energy",   &Energy);
 
+  // Image sizes based on image_number (as per your prior convention)
+  int nColumns=0, nRows=0;
+  if (image_number==4){ nColumns=6400; nRows=1600; }
+  else if (image_number==5){ nColumns=1280; nRows=480; }
+  else if (image_number==6){ nColumns=640;  nRows=1600; NBINS_COMP_Y=41;}
+  else if (image_number==7){ nColumns=640;  nRows=1600; NBINS_COMP_X=41;}
+  else { nColumns=640; nRows=640; }
+
   // Hists
   R.hFront  = new TH2D(Form("hFront_ext%d",extNum),  "Composite Cluster Front Events",
-                       NBINS_COMP, -RANGE_COMP, RANGE_COMP,
-                       NBINS_COMP, -RANGE_COMP, RANGE_COMP);
+  NBINS_COMP_X, -RANGE_COMP, RANGE_COMP,
+  NBINS_COMP_Y, -RANGE_COMP, RANGE_COMP);
   R.hBack   = new TH2D(Form("hBack_ext%d",extNum),   "Composite Cluster Back Events",
-                       NBINS_COMP, -RANGE_COMP, RANGE_COMP,
-                       NBINS_COMP, -RANGE_COMP, RANGE_COMP);
+  NBINS_COMP_X, -RANGE_COMP, RANGE_COMP,
+  NBINS_COMP_Y, -RANGE_COMP, RANGE_COMP);
   R.hEnergy = new TH1F(Form("hEnergy_ext%d",extNum), "hClusterE",
                        50, ENE_MIN, ENE_MAX);
 
@@ -217,13 +236,7 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
   TH2F* henergy_sigmaxy= new TH2F(Form("hE_sigmaxy_ext%d",extNum),
                                   "Energy vs #sigma_{xy}", 50, ENE_MIN, ENE_MAX, 50, 0, 2.0);
 
-  // Image sizes based on image_number (as per your prior convention)
-  int nColumns=0, nRows=0;
-  if (image_number==4){ nColumns=6400; nRows=1600; }
-  else if (image_number==5){ nColumns=1280; nRows=320; }
-  else if (image_number==6){ nColumns=640;  nRows=1600; }
-  else if (image_number==7){ nColumns=640;  nRows=1600; }
-  else { nColumns=640; nRows=640; }
+  
 
   // finalize axis ranges for the helper hists
   hPosX->GetXaxis()->SetLimits(0, nColumns);
@@ -272,8 +285,8 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
         R.hEnergy->Fill(E);
         TH2F* hview = VectorsToTH2F(px, py, pv, "h2_front_tmp");
         // Accumulate into composite centered on (x,y)
-        for (int ix=1; ix<=NBINS_COMP; ++ix){
-          for (int iy=1; iy<=NBINS_COMP; ++iy){
+        for (int ix=1; ix<=NBINS_COMP_X; ++ix){
+          for (int iy=1; iy<=NBINS_COMP_Y; ++iy){
             const double gx = x + R.hFront->GetXaxis()->GetBinLowEdge(ix);
             const double gy = y + R.hFront->GetYaxis()->GetBinLowEdge(iy);
             const double bc = hview->GetBinContent(hview->FindBin(gx, gy)) / (BINS_PER_PIX*BINS_PER_PIX);
@@ -287,8 +300,8 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
       // BACK selection
       if (E>ENE_MIN && E<ENE_MAX && sCutVar > SIGMA_FRONT_CUT){
         TH2F* hview = VectorsToTH2F(px, py, pv, "h2_back_tmp");
-        for (int ix=1; ix<=NBINS_COMP; ++ix){
-          for (int iy=1; iy<=NBINS_COMP; ++iy){
+        for (int ix=1; ix<=NBINS_COMP_X; ++ix){
+          for (int iy=1; iy<=NBINS_COMP_Y; ++iy){
             const double gx = x + R.hBack->GetXaxis()->GetBinLowEdge(ix);
             const double gy = y + R.hBack->GetYaxis()->GetBinLowEdge(iy);
             const double bc = hview->GetBinContent(hview->FindBin(gx, gy)) / (BINS_PER_PIX*BINS_PER_PIX);
@@ -368,14 +381,24 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     cBack->cd(2);
     gPad->SetGridx(); gPad->SetGridy(); gPad->SetLeftMargin(0.16); gPad->SetBottomMargin(0.16);
     R.projX->SetTitle(";Pixel offset [pix];Normalized counts");
-    R.projX->SetLineColor(kBlack); R.projX->SetLineWidth(3);
-    R.projY->SetLineColor(kBlue+1); R.projY->SetLineWidth(3);
+    R.projX->SetLineColor(kBlack); 
+    R.projX->SetLineWidth(3);
+    R.projX->SetFillColorAlpha(kBlack, 0.08);
+    R.projX->SetMarkerStyle(20);
+    R.projX->SetMarkerColor(kBlack);
+
+    R.projY->SetLineColor(kBlue+1); 
+    R.projY->SetLineWidth(3);
+    R.projX->SetFillColorAlpha(kBlue+1, 0.08);
+    R.projX->SetMarkerStyle(20);
+    R.projX->SetMarkerColor(kBlue+1);
+
     double ymax = std::max(R.projX->GetMaximum(), R.projY->GetMaximum())*1.15;
     R.projX->SetMaximum(ymax); R.projX->SetMinimum(0.0);
     R.projX->Draw("HIST"); R.projY->Draw("HIST SAME");
     auto legB = new TLegend(0.57,0.72,0.89,0.88);
-    legB->AddEntry(R.projX,"ProjX (Y: -4 #rightarrow -3 px)","l");
-    legB->AddEntry(R.projY,"ProjY (X: -4 #rightarrow -3 px)","l");
+    legB->AddEntry(R.projX,"ProjX (Y: -3 #rightarrow -2 px)","l");
+    legB->AddEntry(R.projY,"ProjY (X: -3 #rightarrow -2 px)","l");
     legB->Draw();
     // Stats box (integrals & moments)
     // auto paveB = new TPaveText(0.16,0.60,0.54,0.88,"NDC");
@@ -639,14 +662,14 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
 
   // ----------------- (1) Back-side comparison 2×2 -------------------
   {
-    TCanvas* c = new TCanvas("compare_back","Back 2x2", 1400, 1000);
+    TCanvas* c = new TCanvas("compare_back","Back 2x2", 2800, 2200);
     c->Divide(2,2);
     int pad=1;
     for (int e=1; e<=4; ++e){
       if (!R[e].hBack) { ++pad; continue; }
       c->cd(pad++);
       // two subpads per tile
-      TPad* left = new TPad(Form("bL_%d",e),"",0.0,0.0,0.58,1.0); left->Draw();
+      TPad* left = new TPad(Form("bL_%d",e),"",0.0,0.0,0.57,1.0); left->Draw();
       TPad* right= new TPad(Form("bR_%d",e),"",0.58,0.0,1.0,1.0); right->Draw();
 
       left->cd(); left->SetRightMargin(0.16); left->SetLeftMargin(0.12); left->SetBottomMargin(0.12); left->SetLogz();
@@ -663,19 +686,29 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
       right->cd(); right->SetGridx(); right->SetGridy(); right->SetLeftMargin(0.16); right->SetBottomMargin(0.16);
       if (R[e].projX && R[e].projY){
         TH1D* px=(TH1D*)R[e].projX->Clone(); TH1D* py=(TH1D*)R[e].projY->Clone();
-        px->SetTitle(";Pixel offset [pix];Normalized counts");
+        px->GetXaxis()->SetTitle("Pixel offset [pix]");
+        px->GetYaxis()->SetTitle("Normalized counts");
+        px->GetYaxis()->SetTitleOffset(2.3);
         px->SetMaximum(1.15*ymaxProj); px->SetMinimum(0.0);
-        px->SetLineColor(kBlack); px->SetLineWidth(3);
-        py->SetLineColor(kBlue+1); py->SetLineWidth(3);
+        px->SetLineColor(kBlack);
+        px->SetLineWidth(3);
+        px->SetFillColorAlpha(kBlack, 0.08);
+        px->SetMarkerStyle(20);
+        px->SetMarkerColor(kBlack);
+        py->SetLineColor(kBlue+1);
+        py->SetLineWidth(3);
+        py->SetFillColorAlpha(kBlue+1, 0.08);
+        py->SetMarkerStyle(20);
+        py->SetMarkerColor(kBlue+1);
 
         px->Draw("HIST"); py->Draw("HIST SAME");
-        auto leg = new TLegend(0.57,0.72,0.89,0.88);
+        auto leg = new TLegend(0.45,0.8,0.89,0.88);
         leg->SetBorderSize(1);
         leg->SetFillStyle(1001);
         leg->SetTextFont(42);
-        leg->SetTextSize(0.025);
-        leg->AddEntry(px,"ProjX (Y: -4 #rightarrow -3 px)","l");
-        leg->AddEntry(py,"ProjY (X: -4 #rightarrow -3 px)","l");
+        leg->SetTextSize(0.038);
+        leg->AddEntry(px,"ProjX (Y: -3 #rightarrow -2 px)","l");
+        leg->AddEntry(py,"ProjY (X: -3 #rightarrow -2 px)","l");
         leg->Draw();
       }
     }
@@ -683,16 +716,17 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
     delete c;
   }
 
+
   // ----------------- (2) Front-side comparison 2×2 ------------------
   {
-    TCanvas* c = new TCanvas("compare_front","Front 2x2", 1400, 1000);
+    TCanvas* c = new TCanvas("compare_front","Front 2x2", 2800, 2200);
     c->Divide(2,2);
     int pad=1;
     for (int e=1; e<=4; ++e){
       if (!R[e].hFront) { ++pad; continue; }
       c->cd(pad++);
-      TPad* left = new TPad(Form("fL_%d",e),"",0.0,0.0,0.58,1.0); left->Draw();
-      TPad* right= new TPad(Form("fR_%d",e),"",0.58,0.0,1.0,1.0); right->Draw();
+      TPad* left = new TPad(Form("fL_%d",e),"",0.0,0.0,0.57,1.0); left->Draw();
+      TPad* right= new TPad(Form("fR_%d",e),"",0.57,0.0,1.0,1.0); right->Draw();
 
       // LEFT: heatmap + squares + title
       left->cd(); left->SetRightMargin(0.16); left->SetLeftMargin(0.12); left->SetBottomMargin(0.12); left->SetLogz();
@@ -703,7 +737,7 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
       h->GetYaxis()->SetTitle("#Delta y [pix]");
       h->SetTitle("");
       h->Draw("COLZ");
-      auto box=[&](double x1,double y1,double x2,double y2,Color_t c){ TBox*b=new TBox(x1,y1,x2,y2); b->SetLineColor(c); b->SetLineWidth(3); b->SetFillStyle(0); b->Draw("same"); return b; };
+      auto box=[&](double x1,double y1,double x2,double y2,Color_t c){ TBox*b=new TBox(x1,y1,x2,y2); b->SetLineColor(c); b->SetLineWidth(6); b->SetFillStyle(0); b->Draw("same"); return b; };
       TBox* bC = box(-0.5,-0.5,0.5,0.5,kBlack);
       TBox* bA = box(-0.5,1.5,0.5,2.5,kBlue+1);
       TBox* bB = box(-0.5,-1.5,0.5,-0.5,kRed+1);
@@ -719,7 +753,7 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
       frame->GetXaxis()->SetBinLabel(2,"Below");
       frame->GetXaxis()->SetBinLabel(3,"Right");
       frame->GetXaxis()->SetBinLabel(4,"Left");
-      frame->GetXaxis()->SetBinLabel(5,"Center=1.0");
+      frame->GetXaxis()->SetBinLabel(5,"Center");
       double ymax = 1.25*std::max(1.0, std::max({R[e].fAbove,R[e].fBelow,R[e].fRight,R[e].fLeft}));
       frame->SetMinimum(0.0); frame->SetMaximum(ymax); frame->Draw("AXIS");
       TLine* ref=new TLine(0.5,1.0,5.5,1.0); ref->SetLineStyle(2); ref->SetLineColor(kGray+2); ref->Draw();
