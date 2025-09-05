@@ -67,7 +67,7 @@ go into the folder: `cd ~/Code/LSM_Module_Testing_Analysis/Data/DM01_DM02_DM03_H
 `adc_plotter --psd --fname psd*.csv`
 
 ## 3. Image1_High_Temp
-`python3 ../../src/Image_1.py --files avg_Image_1_High_Temp_106_*_.fz --module DM03`
+`python3 ../../src/Image_1.py --files avg_Image_1_High_Temp_106_*.fz --module DM03`
 
 ## 4. Image2_High_Temp
 `python3 ../../src/Image_2.py --files avg_Image_2_High_Temp_106_*_.fz --module DM03`
@@ -94,6 +94,13 @@ download to local:
 
 select the fit results to your liking (if similar, use the last set) per each module, each extension, delete the rest, and run:
 `pdf2plot --files 'avg_Image_3_1000_*_SR_110_*.pdf' DM04_image32 --cleanup`
+
+## 6. Image_4_High_Temp
+
+`Image_4.py` now support wildcard match for `--files`
+
+
+`python3 ../../src/Image_4.py --files "avg_Image_4_High_Temp_*109_*.fz" --module DM13_Image4`
 
 
 ------------------------------
