@@ -70,7 +70,7 @@ go into the folder: `cd ~/Code/LSM_Module_Testing_Analysis/Data/DM01_DM02_DM03_H
 `python3 ../../src/Image_1.py --files avg_Image_1_High_Temp_106_*.fz --module DM03`
 
 ## 4. Image2_High_Temp
-`python3 ../../src/Image_2.py --files avg_Image_2_High_Temp_106_*_.fz --module DM03`
+`python3 ../../src/Image_2.py --files avg_Image_2_High_Temp_SR_106*_.fz --module DM03`
 
 ## 5. Image3_High_Temp
 
@@ -98,7 +98,6 @@ select the fit results to your liking (if similar, use the last set) per each mo
 ## 6. Image_4_High_Temp
 
 `Image_4.py` now support wildcard match for `--files`
-
 
 `python3 ../../src/Image_4.py --files "avg_Image_4_High_Temp_*109_*.fz" --module DM13_Image4`
 
