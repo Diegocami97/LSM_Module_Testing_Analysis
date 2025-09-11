@@ -19,4 +19,7 @@ FT1 ext D ACM 110 -- DM15
 FT2 ext E ACM 109 -- DM16
 FT4 ext F ACM 106 -- DM17 
 -------------------------
+FT1 ext D ACM 110 -- DM18
+FT2 ext E ACM 109 -- DM19
+FT4 ext F ACM 106 -- DM20 
 ````

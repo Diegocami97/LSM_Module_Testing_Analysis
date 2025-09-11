@@ -70,23 +70,26 @@ go into the folder: `cd ~/Code/LSM_Module_Testing_Analysis/Data/DM01_DM02_DM03_H
 `python3 ../../src/Image_1.py --files avg_Image_1_High_Temp_106_*.fz --module DM03`
 
 ## 4. Image2_High_Temp
-`python3 ../../src/Image_2.py --files avg_Image_2_High_Temp_SR_106*_.fz --module DM03`
+`python3 ../../src/Image_2.py --files avg_Image_2_High_Temp_SR_106*.fz --module DM03`
 
 ## 5. Image3_High_Temp
 
-for now, use Wader in daq2 computer, then download generated pdfs to local
+use Wader in daq2 computer, then download generated pdfs to local
 
-`setwadersACM`
 `cd <datafolder>`
 `mkdir temp`
 `cd temp`
+`setwadersACM`
 
 default:
-- `panaSKImg "../avg_Image_3_500*.fz" -j ~/Soft/ccd-cdaq/LSM_Module_Testing_Scripts/Analysis/moduletest_hightemp_image_3_NotHighT.json -o . --acm --save-plots`
+IsHighT = True (Is High DC = True in pedestal subtraction) is preferred
 
-if bad fit (usually 1000 skips image):
+- `panaSKImg "../avg_Image_3_500*.fz" -j ~/Soft/ccd-cdaq/LSM_Module_Testing_Scripts/Analysis/moduletest_hightemp_image_3_IsHighT.json -o . --acm --save-plots`
 - `panaSKImg "../avg_Image_3_1000*.fz" -j ~/Soft/ccd-cdaq/LSM_Module_Testing_Scripts/Analysis/moduletest_hightemp_image_3_IsHighT.json -o . --acm --save-plots`
 
+if bad fit (usually 1000 skips image):
+
+try: `panaSKImg "../avg_Image_3_1000*.fz" -j ~/Soft/ccd-cdaq/LSM_Module_Testing_Scripts/Analysis/moduletest_hightemp_image_3_NotHighT.json -o . --acm --save-plots`
 
 download to local:
 
