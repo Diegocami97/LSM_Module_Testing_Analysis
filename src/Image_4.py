@@ -367,7 +367,7 @@ def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_yl
 def main():
     # argparse interface
     parser = argparse.ArgumentParser(description="Compose CCD median images from multiple FZ files")
-    parser.add_argument("--files", nargs="+", required=True, help="Input .fz files (space-separated)")
+    parser.add_argument('--files', type=str, help="Wildcard pattern for PDF files (e.g., 'trace_*.pdf').")
     parser.add_argument("--output_dir", required=True, help="Path for output directory.")
     parser.add_argument("--module", required=True, help="Module name (used for outputs: <module>.png and <module>.log)")
     args = parser.parse_args()
