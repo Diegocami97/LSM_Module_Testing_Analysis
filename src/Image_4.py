@@ -6,6 +6,10 @@ import argparse
 from pathlib import Path
 from scipy import stats
 import sys
+from natsort import natsorted
+import glob
+from matplotlib.lines import Line2D
+
 # Configuration constants
 overscan_start = 6152
 y_overscan_start = 1536
@@ -281,10 +285,8 @@ def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_yl
     fig, axs = plt.subplots(2, 2, figsize=(18, 12))
     axs = axs.flatten()
 
-
     for i, (image, channel, noise) in enumerate(images):
         ax = axs[i]
-        # im = ax.imshow(image, cmap='cividis', origin='lower', vmin=-1, vmax=100, aspect='auto')
         im = ax.imshow(image, cmap='cividis', origin='lower', vmin=vmin, vmax=vmax, aspect='auto')
         ax.set_title(f'{ccd_image_name} – Channel {channel - 1}', fontsize=14, fontweight="bold")
         ax.set_xlabel("Column Number", fontsize=12)
@@ -292,30 +294,21 @@ def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_yl
 
         divider = make_axes_locatable(ax)
         axbottom = divider.append_axes("bottom", size="30%", pad=0.8, sharex=ax)
-        axright = divider.append_axes("right", size="15%", pad=0.8, sharey=ax)
-        cax = divider.append_axes("right", size="5%", pad=0.3)
+        axright  = divider.append_axes("right",  size="15%", pad=0.8, sharey=ax)
+        cax      = divider.append_axes("right",  size="5%",  pad=0.3)
 
         cbar = plt.colorbar(im, cax=cax)
         cbar.set_label("Signal [ADU]", fontsize=12)
 
         col_medians = np.ma.median(image, axis=0)
         row_medians = np.ma.median(image, axis=1)
-        col_medians[:prescan] = np.nan
+        col_medians[:prescan] = np.nan  # assumes `prescan` exists in your scope
 
         condition_high, condition_low, _, trap_locations = find_col_traps(image)
 
-        # axbottom.step(np.arange(len(col_medians)), col_medians, where='mid', label='Median')
-        # axbottom.step(np.arange(len(condition_high)), condition_high, color='red', linestyle='dashed', label='Median + 6 MAD')
-        # axbottom.step(np.arange(len(condition_low)), condition_low, color='red', linestyle='dotted', label='Median - 6 MAD')
-        # axbottom.set_ylabel("ADU", fontsize=10)
-        # axbottom.set_xlabel("Column Number", fontsize=10)
-        # axbottom.set_title("Column Median", fontsize=10)
-
-        # axbottom.legend(loc='lower left', bbox_to_anchor=(1.0, 0.5), borderaxespad=0., fontsize=8, frameon=True)
-
         # --- bottom panel (shared y-limits across channels) ---
         x_idx = np.arange(len(col_medians))
-        axbottom.step(x_idx, col_medians, where='mid', label='Median')
+        med_line, = axbottom.step(x_idx, col_medians, where='mid', label='Median')
         axbottom.step(np.arange(len(condition_high)), condition_high, color='red',
                       linestyle='dashed', label='Median + 6 MAD')
         axbottom.step(np.arange(len(condition_low)),  condition_low,  color='red',
@@ -324,13 +317,33 @@ def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_yl
         axbottom.set_xlabel("Column Number", fontsize=10)
         axbottom.set_title("Column Median", fontsize=10)
 
-        # >>> apply common y-limits here <<<
         axbottom.set_ylim(colpanel_ylim)
 
-        axbottom.legend(loc='lower left', bbox_to_anchor=(1.0, 0.5),
-                        borderaxespad=0., fontsize=8, frameon=True)
+        # ---- NEW: highlight trap columns in bottom panel ----
+        if trap_locations is not None and len(trap_locations) > 0: # to generate files with the mark 
+        # if False: # to generate the files to upload
+            trap_x = np.asarray(trap_locations, dtype=int)
+            trap_y = np.array(col_medians)[trap_x]
 
+            # Get the vertical midpoint of the bottom panel
+            ylo, yhi = axbottom.get_ylim()
+            y_mid = 0.5 * (ylo + yhi)
 
+            # Plot dots at fixed y position
+            axbottom.plot(trap_x, [y_mid] * len(trap_x),linestyle='', marker='o', markersize=3,
+                          color='lime',mec='darkgreen', markeredgewidth=0.3,
+                          label='defect columns')
+
+            # Update legend
+            handles, labels = axbottom.get_legend_handles_labels()
+            axbottom.legend(handles, labels, loc='lower left',
+                            bbox_to_anchor=(1.0, 0.5),
+                            borderaxespad=0., fontsize=8, frameon=True)
+        else:
+            axbottom.legend(loc='lower left', bbox_to_anchor=(1.0, 0.5),
+                            borderaxespad=0., fontsize=8, frameon=True)
+ 
+        # Right panel (row medians)
         axright.step(row_medians, np.arange(image.shape[0]), where='mid')
         axright.set_xlabel("ADU", fontsize=10)
         axright.set_title("Row Median", fontsize=10)
@@ -341,7 +354,7 @@ def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_yl
         log_file.write("-" * 72 + "\n")
         log_file.write(f"---------------------   {ccd_image_name} - Channel : {i}   -------------------------\n")
         log_file.write(f"Median Noise : {noise} ADU\n")
-        log_file.write(f"Column Defects Location: {trap_locations.tolist()}\n")
+        log_file.write(f"Column Defects Location: {np.asarray(trap_locations).tolist()}\n")
         log_file.write(f"Number of Column Defects: {len(trap_locations)}\n")
         log_file.write(f"CTI X [%]: {cti_x:.2f} ± {cti_x_err:.2f}\n")
         log_file.write(f"CTI Y [%]: {cti_y:.2f} ± {cti_y_err:.2f}\n")
@@ -354,12 +367,16 @@ def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_yl
 def main():
     # argparse interface
     parser = argparse.ArgumentParser(description="Compose CCD median images from multiple FZ files")
-    parser.add_argument("--files", nargs="+", required=True, help="Input .fz files (space-separated)")
+    parser.add_argument('--files', type=str, help="Wildcard pattern for PDF files (e.g., 'trace_*.pdf').")
     parser.add_argument("--output_dir", required=True, help="Path for output directory.")
     parser.add_argument("--module", required=True, help="Module name (used for outputs: <module>.png and <module>.log)")
     args = parser.parse_args()
 
-    fz_files = [str(Path(f)) for f in args.files if Path(f).suffix == ".fz"]
+
+    fz_files = []
+    if args.files:
+        # Expand wildcard matches
+        fz_files = natsorted(glob.glob(args.files))
 
     if not fz_files:
         print("[ERROR] No .fz files provided or matched.")
