@@ -27,6 +27,7 @@
 #include "TMath.h"
 #include "TPad.h"
 #include "TImage.h"
+#include "TSpectrum.h"
 
 
 // --- For cling vector dictionaries ---
@@ -48,6 +49,29 @@ static const double ENE_MAX      = 7.0;
 static const double SIGMA_FRONT_CUT = 0.8;  // front/back cut
 
 // --------------------- Small helpers --------------------------------
+
+
+// // clamp utility
+// template <typename T>
+// static inline T clamp(T v, T lo, T hi){ return std::max(lo, std::min(v, hi)); }
+
+// estimate local sigma from histogram around mu (±window keV)
+static double estimate_local_sigma(TH1* h, double mu, double window_keV){
+  const int ib = h->GetXaxis()->FindBin(mu);
+  const int halfw = std::max(1, int(window_keV / h->GetBinWidth(1)));
+  double sw=0, sx=0, sxx=0;
+  for (int k=ib-halfw; k<=ib+halfw; ++k){
+    if (k<1 || k>h->GetNbinsX()) continue;
+    const double x = h->GetXaxis()->GetBinCenter(k);
+    const double w = h->GetBinContent(k);
+    sw += w; sx += w*x; sxx += w*x*x;
+  }
+  if (sw<=0) return 0.12; // fallback (keV)
+  const double mean = sx/sw;
+  const double var  = std::max(1e-6, sxx/sw - mean*mean);
+  return std::sqrt(var);
+}
+
 static inline void EnsureDir(const TString& path){
   gSystem->mkdir(path, kTRUE);
 }
@@ -489,13 +513,44 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     auto outline=(TH1F*)R.hEnergy->Clone(Form("hE_outline_ext%d",extNum));
     outline->SetFillStyle(0); outline->SetLineColor(kBlack); outline->SetLineWidth(2); outline->Draw("BAR SAME");
 
+    // // fit two per-peak windows
+    // TF1* g1 = new TF1(Form("g1_ext%d",extNum),"gaus",5.0,6.4);
+    // TF1* g2 = new TF1(Form("g2_ext%d",extNum),"gaus",6.0,6.8);
+    // g1->SetParameters(R.hEnergy->GetMaximum(), 6.4, 0.10);
+    // g2->SetParameters(R.hEnergy->GetMaximum()/3.0, 6.40, 0.12);
+    // g1->SetParLimits(2,0.03,0.40); 
+
+    // g2->SetParLimits(2,0.03,0.40);
+    // R.hEnergy->Fit(g1,"RQ0S"); 
+    
+    // R.hEnergy->Fit(g2,"RQ0S");
+
+    // g1->SetLineColor(kRed+1); g1->SetLineWidth(3);
+    // g2->SetLineColor(kBlue+1); g2->SetLineWidth(3);
+    // g1->Draw("SAME"); g2->Draw("SAME");
+
     // fit two per-peak windows
-    TF1* g1 = new TF1(Form("g1_ext%d",extNum),"gaus",5.3,6.1);
-    TF1* g2 = new TF1(Form("g2_ext%d",extNum),"gaus",6.0,6.8);
-    g1->SetParameters(R.hEnergy->GetMaximum(), 5.90, 0.10);
-    g2->SetParameters(R.hEnergy->GetMaximum()/3.0, 6.40, 0.12);
-    g1->SetParLimits(2,0.03,0.40); g2->SetParLimits(2,0.03,0.40);
-    R.hEnergy->Fit(g1,"RQ0S"); R.hEnergy->Fit(g2,"RQ0S");
+    TF1* g1 = new TF1(Form("g1_ext%d",extNum),"gaus",5.0,6.4);  // broader range to 6.3
+    g1->SetParameters(R.hEnergy->GetMaximum(), 6.4, 0.10);
+    g1->SetParLimits(2,0.03,0.40);
+    R.hEnergy->Fit(g1,"RQ0S");
+
+    // Get the mean and 2*sigma from first fit
+    double mu1 = g1->GetParameter(1);
+    double sigma1 = g1->GetParameter(2);
+    double two_sig = sigma1 * 2;  
+
+    // Set second peak window based on first peak
+    double g2_left = mu1 + two_sig;
+    double g2_right = g2_left + 1;
+
+    TF1* g2 = new TF1(Form("g2_ext%d",extNum),"gaus",g2_left,g2_right);
+    g2->SetParameters(R.hEnergy->GetMaximum()/3.0, (g2_left+g2_right)/2.0, 0.12);  // center initial guess
+    g2->SetParLimits(2,0.03,0.40);
+    R.hEnergy->Fit(g2,"RQ0S");
+
+    double mu2 = g2->GetParameter(1);
+    double sigma2 = g2->GetParameter(2);
 
     g1->SetLineColor(kRed+1); g1->SetLineWidth(3);
     g2->SetLineColor(kBlue+1); g2->SetLineWidth(3);
@@ -541,9 +596,12 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     delete cE;
   }
 
+
+
   // ----------------- Extra plots per extension ------------------
   {
     // posX vs sigmaXY
+    
     TCanvas* c1=new TCanvas(Form("c_posx_sigmaxy_ext%d",extNum),"posx vs sigmaxy",800,600);
     c1->cd(); gPad->SetLogz(); hposx_sigmaxy->SetTitle("Mean x vs #sigma_{xy}");
     hposx_sigmaxy->GetXaxis()->SetTitle("Mean x [col]");
@@ -789,13 +847,21 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
 
         TH1F* h=(TH1F*)R[e].hEnergy->Clone();
         h->SetTitle(";Energy [keV];Counts");
-        h->SetFillColorAlpha(kGray+1,0.60); h->SetLineColor(kGray+2); h->SetBarWidth(0.95); h->SetBarOffset(0.025);
-        h->SetMaximum(1.15*ymaxEnergy); h->Draw("BAR");
+        h->SetFillColorAlpha(kGray+1,0.60); 
+        h->SetLineColor(kGray+2); 
+        h->SetBarWidth(0.95); 
+        h->SetBarOffset(0.025);
+        // h->SetMaximum(1.15*ymaxEnergy); 
+        // h->Draw("BAR");
+        h->SetMaximum(1.15 * ymaxEnergy);
+        h->GetYaxis()->SetNoExponent(true);   // avoid "×10^3" label
+        h->GetYaxis()->SetMaxDigits(3);
+        h->Draw("BAR");
         auto outline=(TH1F*)h->Clone(Form("hEout_cmp_%d",e)); outline->SetFillStyle(0); outline->SetLineColor(kBlack); outline->SetLineWidth(2); outline->Draw("BAR SAME");
 
         // draw fitted components using stored params
-        TF1* g1=new TF1(Form("cEg1_%d",e),"gaus",5.3,6.1);
-        TF1* g2=new TF1(Form("cEg2_%d",e),"gaus",6.0,6.8);
+        TF1* g1=new TF1(Form("cEg1_%d",e),"gaus",R[e].mu1-4*R[e].s1, R[e].mu1+4*R[e].s1);
+        TF1* g2=new TF1(Form("cEg2_%d",e),"gaus",R[e].mu2-4*R[e].s2, R[e].mu2+4*R[e].s2);
 
         // fallback if a fit failed
         const double A1 = (R[e].A1>0 ? R[e].A1 : h->GetMaximum());
@@ -808,8 +874,10 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
         g2->SetLineColor(kBlue+1); g2->SetLineWidth(3);
 
         // ensure headroom for curves too
-        double ymaxPanel = 1.15 * std::max( { h->GetMaximum(), A1, A2 } );
-        h->SetMaximum(ymaxPanel);
+        // double ymaxPanel = 1.15 * std::max( { h->GetMaximum(), A1, A2 } );
+        // h->SetMaximum(ymaxPanel);
+
+        
 
         g1->Draw("SAME");
         g2->Draw("SAME");
