@@ -365,29 +365,37 @@ def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_yl
     plt.close()
 
 def main():
-    # argparse interface
+    # # argparse interface
     parser = argparse.ArgumentParser(description="Compose CCD median images from multiple FZ files")
-    parser.add_argument('--files', type=str, help="Wildcard pattern for PDF files (e.g., 'trace_*.pdf').")
+    parser.add_argument(
+        "--files",
+        nargs="+",                 # <-- accept one or more
+        required=True,
+        help="One or more .fz files or glob patterns (e.g. avg_Image_4_Low_Temp_106_*_*_*.fz)",
+    )
     parser.add_argument("--output_dir", required=True, help="Path for output directory.")
     parser.add_argument("--module", required=True, help="Module name (used for outputs: <module>.png and <module>.log)")
     args = parser.parse_args()
 
-
+    # Gather files from patterns or explicit paths
     fz_files = []
-    if args.files:
-        # Expand wildcard matches
-        fz_files = natsorted(glob.glob(args.files))
+    for pat in args.files:
+        # expand globs
+        matches = glob.glob(pat)
+        if matches:
+            fz_files.extend(matches)
+        else:
+            # allow explicit single paths (no glob match needed)
+            if Path(pat).exists():
+                fz_files.append(pat)
+
+    # sort naturally and de-duplicate
+    fz_files = natsorted(list(dict.fromkeys(fz_files)))
 
     if not fz_files:
         print("[ERROR] No .fz files provided or matched.")
         sys.exit(1)
 
-    # check existence
-    missing = [f for f in fz_files if not Path(f).exists()]
-    if missing:
-        for f in missing:
-            print(f"[ERROR] File not found: {f}")
-        sys.exit(1)
 
     ccd_image_name = args.module
 
