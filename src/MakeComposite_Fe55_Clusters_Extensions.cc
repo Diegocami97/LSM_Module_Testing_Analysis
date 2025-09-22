@@ -638,7 +638,7 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     // Get the mean and 2*sigma from first fit
     double mu3 = g3->GetParameter(1);
     double sigma3 = g3->GetParameter(2);
-    double two_sig = sigma3 * 2;  
+    double two_sig = sigma3 * 3;  
 
     // Set second peak window based on first peak
     double g4_left = mu3 + two_sig;
@@ -664,13 +664,13 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     R.A3 = g3->GetParameter(0); R.A3_err = g3->GetParError(0);
     R.A4 = g4->GetParameter(0); R.A4_err = g4->GetParError(0);
 
-    double ymaxPanel = 1.2 * std::max({
-      R.hEnergy_back->GetMaximum(),
-      R.A3,
-      R.A4
-    });
-    R.hEnergy_back->SetMaximum(ymaxPanel);
-    outline->SetMaximum(ymaxPanel);
+    // double ymaxPanel = 1.2 * std::max({
+    //   R.hEnergy_back->GetMaximum(),
+    //   R.A3,
+    //   R.A4
+    // });
+    // R.hEnergy_back->SetMaximum(ymaxPanel);
+    // outline->SetMaximum(ymaxPanel);
 
     // NEED TO LOOK AT THIS MORE
     auto inG3=[&](double x){ return x>=5.3 && x<=6.1; };
@@ -711,32 +711,50 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     cE_fb->cd(); gPad->SetGridx(); gPad->SetGridy();
     gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
 
+    double ymaxPanel = 1.2 * std::max({
+      R.hEnergy_back->GetMaximum(),
+      R.A1,
+      R.A2,
+      R.A3,
+      R.A4,
+      R.hEnergy_front->GetMaximum()
+    });
 
     // ----------- FRONT HIST ---------
-    R.hEnergy_front->SetTitle(";Energy [keV];Counts");
-    R.hEnergy_front->SetFillColorAlpha(kRed,0.6);
-    R.hEnergy_front->SetLineColor(kRed+2);
-    R.hEnergy_front->SetBarWidth(0.95);
-    R.hEnergy_front->SetBarOffset(0);
-    R.hEnergy_front->Draw("BAR");
+    TH1F* h_front=(TH1F*)R.hEnergy_front->Clone();
+    h_front->SetTitle(";Energy [keV];Counts");
+    h_front->SetFillColorAlpha(kRed+1,0.5);
+    h_front->SetLineColor(kRed+2);
+    h_front->SetBarWidth(0.95);
+    h_front->SetBarOffset(0.05);
+    h_front->SetMaximum(1.15 * ymaxPanel);
+    h_front->GetYaxis()->SetNoExponent(true);   // avoid "×10^3" label
+    h_front->GetYaxis()->SetMaxDigits(3);
+    h_front->Draw("BAR");
 
     auto frontOutline = (TH1F*)R.hEnergy_front->Clone("hE_outline_front");
-    frontOutline->SetFillStyle(0); frontOutline->SetLineColor(kRed);
+    frontOutline->SetFillStyle(0); frontOutline->SetLineColor(kBlack);
     frontOutline->SetLineWidth(1);
     frontOutline->Draw("BAR SAME");
 
     // ----------- BACK HIST ---------
-    R.hEnergy_back->SetLineColor(kBlue+1);
-    R.hEnergy_back->SetFillColorAlpha(kBlue+1, 0.6);
-    R.hEnergy_back->SetBarWidth(0.95);
-    R.hEnergy_back->SetBarOffset(0);  
-    R.hEnergy_back->Draw("BAR SAME");
+    TH1F* h_back=(TH1F*)R.hEnergy_back->Clone();
+    h_back->SetTitle(";Energy [keV];Counts");
+    h_back->SetFillColorAlpha(kBlue+1,0.5);
+    h_back->SetLineColor(kBlue+2);
+    h_back->SetBarWidth(0.95);
+    h_back->SetBarOffset(0.05);
+    h_back->SetMaximum(1.15 * ymaxPanel);
+    h_back->GetYaxis()->SetNoExponent(true);   // avoid "×10^3" label
+    h_back->GetYaxis()->SetMaxDigits(3);
+    h_back->Draw("BAR SAME");
 
     auto backOutline = (TH1F*)R.hEnergy_back->Clone("hE_outline_back");
-    backOutline->SetFillStyle(0); backOutline->SetLineColor(kBlue);
+    backOutline->SetFillStyle(0); backOutline->SetLineColor(kBlack);
     backOutline->SetLineWidth(1);
     backOutline->Draw("BAR SAME");
 
+    
 
     // draw fitted components using stored params
     TF1* g1=new TF1(Form("cEg1_%d",extNum),"gaus", R.mu1-4*R.s1, R.mu1+4*R.s1);
@@ -1098,6 +1116,15 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
         if (!R[e].hEnergy_front){ ++pad; continue; }
         c->cd(pad++); gPad->SetGridx(); gPad->SetGridy(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
         
+        double ymaxPanel = 1.2 * std::max({
+          R[e].hEnergy_back->GetMaximum(),
+          R[e].A1,
+          R[e].A2,
+          R[e].A3,
+          R[e].A4,
+          R[e].hEnergy_front->GetMaximum()
+        });
+
         // ----------- FRONT HIST ---------
         TH1F* h_front=(TH1F*)R[e].hEnergy_front->Clone();
         h_front->SetTitle(";Energy [keV];Counts");
@@ -1105,7 +1132,7 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
         h_front->SetLineColor(kRed+2);
         h_front->SetBarWidth(0.95);
         h_front->SetBarOffset(0.05);
-        h_front->SetMaximum(1.15 * ymaxEnergy);
+        h_front->SetMaximum( ymaxPanel);
         h_front->GetYaxis()->SetNoExponent(true);   // avoid "×10^3" label
         h_front->GetYaxis()->SetMaxDigits(3);
         h_front->Draw("BAR");
@@ -1122,7 +1149,7 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
         h_back->SetLineColor(kBlue+2);
         h_back->SetBarWidth(0.95);
         h_back->SetBarOffset(0.05);
-        h_back->SetMaximum(1.15 * ymaxEnergy);
+        h_back->SetMaximum( ymaxPanel);
         h_back->GetYaxis()->SetNoExponent(true);   // avoid "×10^3" label
         h_back->GetYaxis()->SetMaxDigits(3);
         h_back->Draw("BAR SAME");
@@ -1173,7 +1200,7 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
         leg_front->SetFillStyle(1001);
         leg_front->SetTextFont(42);
         leg_front->SetTextSize(0.030);
-        leg_front->AddEntry(R[e].hEnergy_front, "#sigma_{xy}<1 (front)", "f");
+        leg_front->AddEntry(h_front, "#sigma_{xy}<1 (front)", "f");
         leg_front->AddEntry(g1, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R[e].mu1, R[e].mu1_err, R[e].s1, R[e].s1_err), "l");
         leg_front->AddEntry(g2, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R[e].mu2, R[e].mu2_err, R[e].s2, R[e].s2_err), "l");
 
@@ -1183,7 +1210,7 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
         leg_back->SetFillStyle(1001);
         leg_back->SetTextFont(42);
         leg_back->SetTextSize(0.030);
-        leg_back->AddEntry(R[e].hEnergy_back, "#sigma_{xy}>1 (back)", "f");
+        leg_back->AddEntry(h_back, "#sigma_{xy}>1 (back)", "f");
         leg_back->AddEntry(g3, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R[e].mu3, R[e].mu3_err, R[e].s3, R[e].s3_err), "l");
         leg_back->AddEntry(g4, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R[e].mu4, R[e].mu4_err, R[e].s4, R[e].s4_err), "l");
 
