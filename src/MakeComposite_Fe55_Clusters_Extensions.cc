@@ -46,8 +46,7 @@ static const int    BINS_PER_PIX = 25;      // sampling density for pixel maps
 static const double E_PER_ADU    = 3.8;     // eV->ADU scaling used in printouts
 static const double ENE_MIN      = 4.5;     // energy window [keV]
 static const double ENE_MAX      = 7.0;
-static const double SIGMA_FRONT_CUT = 0.8;  // front/back cut
-
+static const double SIGMA_FRONT_CUT = 1;  // front/back cut
 // --------------------- Small helpers --------------------------------
 
 
@@ -169,7 +168,11 @@ struct ExtResults {
     // composites & spectra
     TH2D*  hFront  = nullptr;
     TH2D*  hBack   = nullptr;
-    TH1F*  hEnergy = nullptr;    // front-side energy histogram
+    TH1F*  hEnergy = nullptr;
+    TH1F*  hEnergy_front = nullptr;
+    TH1F*  hEnergy_back = nullptr;
+    TH2F*  henergy_sigmaxy = nullptr;
+    TH2F*  henergy_sigmaxy2 = nullptr;
 
     // projections (normalized copies for compare tiles)
     TH1D*  projX   = nullptr;    // back: ProjectionX over y ∈ [-4,-3]
@@ -193,6 +196,13 @@ struct ExtResults {
     double mu1=0, mu1_err=0, s1=0, s1_err=0;
     double mu2=0, mu2_err=0, s2=0, s2_err=0;
     double chi2=0; int ndf=0; double p=0;
+
+    // energy fits (separate gaussians in windows)
+    double A3=0, A3_err=0;   // peak heights for Kα
+    double A4=0, A4_err=0;   // peak heights for Kβ
+    double mu3=0, mu3_err=0, s3=0, s3_err=0;
+    double mu4=0, mu4_err=0, s4=0, s4_err=0;
+    double chi2_2=0; int ndf_2=0; double p_2=0;
 };
 
 // --------------------- per-extension processing ----------------------
@@ -248,6 +258,10 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
   NBINS_COMP_Y, -RANGE_COMP, RANGE_COMP);
   R.hEnergy = new TH1F(Form("hEnergy_ext%d",extNum), "hClusterE",
                        50, ENE_MIN, ENE_MAX);
+  R.hEnergy_front = new TH1F(Form("hEnergy_ext%d",extNum), "hClusterE",
+                       50, ENE_MIN, ENE_MAX);
+  R.hEnergy_back = new TH1F(Form("hEnergy_ext%d",extNum), "hClusterE",
+                       50, ENE_MIN, ENE_MAX);
 
   // Additional distributions (saved later)
   TH1F* hPosX = new TH1F(Form("hPosX_ext%d",extNum), "PosX", 20, 0, 1);   // range updated below
@@ -257,7 +271,7 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
   TH1F* hSigmax  = new TH1F(Form("hSigmax_ext%d", extNum),  "Sigmax",  50, 0, 2.0);
   TH1F* hSigmay  = new TH1F(Form("hSigmay_ext%d", extNum),  "Sigmay",  50, 0, 2.0);
   TH2F* hposx_sigmaxy = nullptr;
-  TH2F* henergy_sigmaxy= new TH2F(Form("hE_sigmaxy_ext%d",extNum),
+  R.henergy_sigmaxy= new TH2F(Form("hE_sigmaxy_ext%d",extNum),
                                   "Energy vs #sigma_{xy}", 50, ENE_MIN, ENE_MAX, 50, 0, 2.0);
 
   
@@ -295,7 +309,7 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
         hPosX->Fill(x); hPosY->Fill(y);
         hPosXY->Fill(x,y,E);
         hposx_sigmaxy->Fill(x, sxy, E);
-        henergy_sigmaxy->Fill(E, sxy);
+        R.henergy_sigmaxy->Fill(E, sxy);
         R.nAcceptedEnergy++;
       }
 
@@ -307,6 +321,7 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
       // FRONT selection
       if (E>ENE_MIN && E<ENE_MAX && sCutVar < SIGMA_FRONT_CUT){
         R.hEnergy->Fill(E);
+        R.hEnergy_front->Fill(E);
         TH2F* hview = VectorsToTH2F(px, py, pv, "h2_front_tmp");
         // Accumulate into composite centered on (x,y)
         for (int ix=1; ix<=NBINS_COMP_X; ++ix){
@@ -323,6 +338,8 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
 
       // BACK selection
       if (E>ENE_MIN && E<ENE_MAX && sCutVar > SIGMA_FRONT_CUT){
+        R.hEnergy_back->Fill(E);
+
         TH2F* hview = VectorsToTH2F(px, py, pv, "h2_back_tmp");
         for (int ix=1; ix<=NBINS_COMP_X; ++ix){
           for (int iy=1; iy<=NBINS_COMP_Y; ++iy){
@@ -498,42 +515,42 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     delete cFront;
   }
 
-  // -------------- ENERGY: double-Gaussian style plot ----------------
+  // -------------- ENERGY: double-Gaussian style plot - Front----------------
   {
     TCanvas* cE = new TCanvas(Form("cE_ext%d",extNum),"Cluster Energy (double Gaussian)",900,600);
     cE->cd(); gPad->SetGridx(); gPad->SetGridy(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
 
     // matplotlib-like bars
-    R.hEnergy->SetTitle(";Energy [keV];Counts");
-    R.hEnergy->SetFillColorAlpha(kGray+1, 0.6);
-    R.hEnergy->SetLineColor(kGray+2);
-    R.hEnergy->SetBarWidth(0.95);
-    R.hEnergy->SetBarOffset(0.025);
-    R.hEnergy->Draw("BAR");
-    auto outline=(TH1F*)R.hEnergy->Clone(Form("hE_outline_ext%d",extNum));
+    R.hEnergy_front->SetTitle(";Energy [keV];Counts");
+    R.hEnergy_front->SetFillColorAlpha(kGray+1, 0.6);
+    R.hEnergy_front->SetLineColor(kGray+2);
+    R.hEnergy_front->SetBarWidth(0.95);
+    R.hEnergy_front->SetBarOffset(0.025);
+    R.hEnergy_front->Draw("BAR");
+    auto outline=(TH1F*)R.hEnergy_front->Clone(Form("hE_outline_ext%d",extNum));
     outline->SetFillStyle(0); outline->SetLineColor(kBlack); outline->SetLineWidth(2); outline->Draw("BAR SAME");
 
     // // fit two per-peak windows
     // TF1* g1 = new TF1(Form("g1_ext%d",extNum),"gaus",5.0,6.4);
     // TF1* g2 = new TF1(Form("g2_ext%d",extNum),"gaus",6.0,6.8);
-    // g1->SetParameters(R.hEnergy->GetMaximum(), 6.4, 0.10);
-    // g2->SetParameters(R.hEnergy->GetMaximum()/3.0, 6.40, 0.12);
+    // g1->SetParameters(R.hEnergy_front->GetMaximum(), 6.4, 0.10);
+    // g2->SetParameters(R.hEnergy_front->GetMaximum()/3.0, 6.40, 0.12);
     // g1->SetParLimits(2,0.03,0.40); 
 
     // g2->SetParLimits(2,0.03,0.40);
-    // R.hEnergy->Fit(g1,"RQ0S"); 
+    // R.hEnergy_front->Fit(g1,"RQ0S"); 
     
-    // R.hEnergy->Fit(g2,"RQ0S");
+    // R.hEnergy_front->Fit(g2,"RQ0S");
 
     // g1->SetLineColor(kRed+1); g1->SetLineWidth(3);
     // g2->SetLineColor(kBlue+1); g2->SetLineWidth(3);
     // g1->Draw("SAME"); g2->Draw("SAME");
 
     // fit two per-peak windows
-    TF1* g1 = new TF1(Form("g1_ext%d",extNum),"gaus",5.0,6.4);  // broader range to 6.3
-    g1->SetParameters(R.hEnergy->GetMaximum(), 6.4, 0.10);
+    TF1* g1 = new TF1(Form("g1_ext%d",extNum),"gaus",4.5,6.3); 
+    g1->SetParameters(R.hEnergy_front->GetMaximum(), 6.4, 0.10);
     g1->SetParLimits(2,0.03,0.40);
-    R.hEnergy->Fit(g1,"RQ0S");
+    R.hEnergy_front->Fit(g1,"RQ0S");
 
     // Get the mean and 2*sigma from first fit
     double mu1 = g1->GetParameter(1);
@@ -545,9 +562,10 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     double g2_right = g2_left + 1;
 
     TF1* g2 = new TF1(Form("g2_ext%d",extNum),"gaus",g2_left,g2_right);
-    g2->SetParameters(R.hEnergy->GetMaximum()/3.0, (g2_left+g2_right)/2.0, 0.12);  // center initial guess
+    g2->SetParameters(R.hEnergy_front->GetMaximum()/3.0, (g2_left+g2_right)/2.0, 0.12);  // center initial guess
+    // g2->SetParameters(R.hEnergy_front->GetMaximum()/3.0, 5.25, 0.12);  // center initial guess
     g2->SetParLimits(2,0.03,0.40);
-    R.hEnergy->Fit(g2,"RQ0S");
+    R.hEnergy_front->Fit(g2,"RQ0S");
 
     double mu2 = g2->GetParameter(1);
     double sigma2 = g2->GetParameter(2);
@@ -568,10 +586,10 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     auto inG1=[&](double x){ return x>=5.3 && x<=6.1; };
     auto inG2=[&](double x){ return x>=6.0 && x<=6.8; };
     R.chi2=0; R.ndf=0;
-    for (int ib=1; ib<=R.hEnergy->GetNbinsX(); ++ib){
-      const double x = R.hEnergy->GetXaxis()->GetBinCenter(ib);
+    for (int ib=1; ib<=R.hEnergy_front->GetNbinsX(); ++ib){
+      const double x = R.hEnergy_front->GetXaxis()->GetBinCenter(ib);
       if (!(inG1(x) || inG2(x))) continue;
-      const double y = R.hEnergy->GetBinContent(ib);
+      const double y = R.hEnergy_front->GetBinContent(ib);
       const double yfit = g1->Eval(x) + g2->Eval(x);
       const double var = y + 1e-6;
       R.chi2 += (y-yfit)*(y-yfit)/var;
@@ -585,7 +603,7 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     leg->SetBorderSize(1); leg->SetFillStyle(1001); leg->SetTextFont(42); leg->SetTextSize(0.035);
     leg->AddEntry(g1,Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu1,R.mu1_err,R.s1,R.s1_err),"l");
     leg->AddEntry(g2,Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu2,R.mu2_err,R.s2,R.s2_err),"l");
-    leg->AddEntry(R.hEnergy,"Data","f");
+    leg->AddEntry(R.hEnergy_front,"Data","f");
     leg->Draw();
 
     // per-tile title (consistency with compare)
@@ -596,7 +614,191 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     delete cE;
   }
 
+  // -------------- ENERGY: double-Gaussian style plot - Back ----------------
+  {
+    TCanvas* cE_back = new TCanvas(Form("cE_ext%d",extNum),"Cluster Energy (double Gaussian)",900,600);
+    cE_back->cd(); gPad->SetGridx(); gPad->SetGridy(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
 
+    // matplotlib-like bars
+    R.hEnergy_back->SetTitle(";Energy [keV];Counts");
+    R.hEnergy_back->SetFillColorAlpha(kGray+1, 0.6);
+    R.hEnergy_back->SetLineColor(kGray+2);
+    R.hEnergy_back->SetBarWidth(0.95);
+    R.hEnergy_back->SetBarOffset(0.025);
+    R.hEnergy_back->Draw("BAR");
+    auto outline=(TH1F*)R.hEnergy_back->Clone(Form("hE_outline_ext%d",extNum));
+    outline->SetFillStyle(0); outline->SetLineColor(kBlack); outline->SetLineWidth(2); outline->Draw("BAR SAME");
+
+    // fit two per-peak windows
+    TF1* g3 = new TF1(Form("g3_ext%d",extNum),"gaus",4.5,6.3);  // broader range to 6.3
+    g3->SetParameters(R.hEnergy_back->GetMaximum(), 6.4, 0.10);
+    g3->SetParLimits(2,0.03,0.40);
+    R.hEnergy_back->Fit(g3,"RQ0S");
+
+    // Get the mean and 2*sigma from first fit
+    double mu3 = g3->GetParameter(1);
+    double sigma3 = g3->GetParameter(2);
+    double two_sig = sigma3 * 2;  
+
+    // Set second peak window based on first peak
+    double g4_left = mu3 + two_sig;
+    double g4_right = g4_left + 1;
+
+    TF1* g4 = new TF1(Form("g4_ext%d",extNum),"gaus",g4_left,g4_right);
+    g4->SetParameters(R.hEnergy_back->GetMaximum()/3.0, (g4_left+g4_right)/2.0, 0.12);  // center initial guess
+    g4->SetParLimits(2,0.03,0.40);
+    R.hEnergy_back->Fit(g4,"RQ0S");
+
+    double mu2 = g4->GetParameter(1);
+    double sigma2 = g4->GetParameter(2);
+
+    g3->SetLineColor(kRed+1); g3->SetLineWidth(3);
+    g4->SetLineColor(kBlue+1); g4->SetLineWidth(3);
+    g3->Draw("SAME"); g4->Draw("SAME");
+
+    // extract params & manual chi2 over union of windows
+    R.mu3=g3->GetParameter(1); R.mu3_err=g3->GetParError(1);
+    R.s3 =g3->GetParameter(2); R.s3_err =g3->GetParError(2);
+    R.mu4=g4->GetParameter(1); R.mu4_err=g4->GetParError(1);
+    R.s4 =g4->GetParameter(2); R.s4_err =g4->GetParError(2);
+    R.A3 = g3->GetParameter(0); R.A3_err = g3->GetParError(0);
+    R.A4 = g4->GetParameter(0); R.A4_err = g4->GetParError(0);
+
+    double ymaxPanel = 1.2 * std::max({
+      R.hEnergy_back->GetMaximum(),
+      R.A3,
+      R.A4
+    });
+    R.hEnergy_back->SetMaximum(ymaxPanel);
+    outline->SetMaximum(ymaxPanel);
+
+    // NEED TO LOOK AT THIS MORE
+    auto inG3=[&](double x){ return x>=5.3 && x<=6.1; };
+    auto inG4=[&](double x){ return x>=6.0 && x<=6.8; };
+    R.chi2_2=0; R.ndf_2=0;
+    for (int ib=1; ib<=R.hEnergy_back->GetNbinsX(); ++ib){
+      const double x = R.hEnergy_back->GetXaxis()->GetBinCenter(ib);
+      if (!(inG3(x) || inG4(x))) continue;
+      const double y = R.hEnergy_back->GetBinContent(ib);
+      const double yfit = g3->Eval(x) + g4->Eval(x);
+      const double var = y + 1e-6;
+      R.chi2_2 += (y-yfit)*(y-yfit)/var;
+      ++R.ndf_2;
+    }
+    R.ndf_2 = std::max(1, R.ndf_2 - 6);
+    R.p_2 = TMath::Prob(R.chi2_2, R.ndf_2);
+
+    // Legend with splitline labels
+    auto leg = new TLegend(0.58,0.63,0.89,0.88);
+    leg->SetBorderSize(1); leg->SetFillStyle(1001); leg->SetTextFont(42); leg->SetTextSize(0.035);
+    leg->AddEntry(g3,Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu3,R.mu3_err,R.s3,R.s3_err),"l");
+    leg->AddEntry(g4,Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu4,R.mu4_err,R.s4,R.s4_err),"l");
+    leg->AddEntry(R.hEnergy_back,"Data","f");
+    leg->Draw();
+
+    // per-tile title (consistency with compare)
+    { TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.05);
+      lab.DrawLatex(0.50,0.965,Form("Back-Side Energy Spectrum - %s - Ext %d", moduleUsed, extNum)); }
+
+    SaveCanvas(cE_back, Form("%s/cluster_energy_back", extDir.Data()));
+    delete cE_back;
+  }
+
+  // -------------- ENERGY: double-Gaussian style plot - Front & Back ----------------
+  {
+    TCanvas* cE_fb = new TCanvas(Form("cE_fb_ext%d",extNum),
+                              "Cluster Energy: Front & Back", 900, 600);
+    cE_fb->cd(); gPad->SetGridx(); gPad->SetGridy();
+    gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
+
+
+    // ----------- FRONT HIST ---------
+    R.hEnergy_front->SetTitle(";Energy [keV];Counts");
+    R.hEnergy_front->SetFillColorAlpha(kRed,0.6);
+    R.hEnergy_front->SetLineColor(kRed+2);
+    R.hEnergy_front->SetBarWidth(0.95);
+    R.hEnergy_front->SetBarOffset(0);
+    R.hEnergy_front->Draw("BAR");
+
+    auto frontOutline = (TH1F*)R.hEnergy_front->Clone("hE_outline_front");
+    frontOutline->SetFillStyle(0); frontOutline->SetLineColor(kRed);
+    frontOutline->SetLineWidth(1);
+    frontOutline->Draw("BAR SAME");
+
+    // ----------- BACK HIST ---------
+    R.hEnergy_back->SetLineColor(kBlue+1);
+    R.hEnergy_back->SetFillColorAlpha(kBlue+1, 0.6);
+    R.hEnergy_back->SetBarWidth(0.95);
+    R.hEnergy_back->SetBarOffset(0);  
+    R.hEnergy_back->Draw("BAR SAME");
+
+    auto backOutline = (TH1F*)R.hEnergy_back->Clone("hE_outline_back");
+    backOutline->SetFillStyle(0); backOutline->SetLineColor(kBlue);
+    backOutline->SetLineWidth(1);
+    backOutline->Draw("BAR SAME");
+
+
+    // draw fitted components using stored params
+    TF1* g1=new TF1(Form("cEg1_%d",extNum),"gaus", R.mu1-4*R.s1, R.mu1+4*R.s1);
+    TF1* g2=new TF1(Form("cEg2_%d",extNum),"gaus", R.mu2-4*R.s2, R.mu2+4*R.s2);
+    TF1* g3=new TF1(Form("cEg3_%d",extNum),"gaus", R.mu3-4*R.s3, R.mu3+4*R.s3);
+    TF1* g4=new TF1(Form("cEg4_%d",extNum),"gaus", R.mu4-4*R.s4, R.mu4+4*R.s4);
+
+    // fallback if a fit failed
+    const double A1 = (R.A1>0 ? R.A1 : backOutline->GetMaximum());
+    const double A2 = (R.A2>0 ? R.A2 : 0.3*backOutline->GetMaximum());
+    const double A3 = (R.A3>0 ? R.A3 : backOutline->GetMaximum());
+    const double A4 = (R.A4>0 ? R.A4 : 0.3*backOutline->GetMaximum());
+
+    g1->SetParameters(R.A1, R.mu1, std::max(0.03, R.s1));
+    g2->SetParameters(R.A2, R.mu2, std::max(0.03, R.s2));
+    g1->SetNpx(600); g2->SetNpx(600);
+    g3->SetParameters(R.A3, R.mu3, std::max(0.03, R.s3));
+    g4->SetParameters(R.A4, R.mu4, std::max(0.03, R.s4));
+    g3->SetNpx(600); g4->SetNpx(600);
+
+    // ---- DRAW FITS (already existing objects: g1/g2/g3/g4) ----
+    g1->SetLineColor(kRed+1);   g1->SetLineWidth(4); g1->SetLineStyle(1); g1->Draw("SAME");
+    g2->SetLineColor(kRed-7);   g2->SetLineWidth(4); g2->SetLineStyle(1); g2->Draw("SAME");
+    g3->SetLineColor(kBlue+1);  g3->SetLineWidth(2); g3->SetLineStyle(1); g3->Draw("SAME"); 
+    g4->SetLineColor(kBlue-7);   g4->SetLineWidth(2); g4->SetLineStyle(1); g4->Draw("SAME");
+
+
+
+    /// Left legend for "Front data"
+    auto leg_front = new TLegend(0.145, 0.65, 0.385, 0.89);
+    leg_front->SetBorderSize(1);
+    leg_front->SetFillStyle(1001);
+    leg_front->SetTextFont(42);
+    leg_front->SetTextSize(0.030);
+
+    leg_front->AddEntry(R.hEnergy_front, "Front", "f");
+    leg_front->AddEntry(g1, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu1, R.mu1_err, R.s1, R.s1_err), "l");
+    leg_front->AddEntry(g2, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu2, R.mu2_err, R.s2, R.s2_err), "l");
+
+    // Right legend for "Back data"
+    auto leg_back = new TLegend(0.64, 0.65, 0.88, 0.89);
+    leg_back->SetBorderSize(1);
+    leg_back->SetFillStyle(1001);
+    leg_back->SetTextFont(42);
+    leg_back->SetTextSize(0.030);
+
+    leg_back->AddEntry(R.hEnergy_back, "Back", "f");
+    leg_back->AddEntry(g3, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu3, R.mu3_err, R.s3, R.s3_err), "l");
+    leg_back->AddEntry(g4, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu4, R.mu4_err, R.s4, R.s4_err), "l");
+
+    // Draw both legends
+    leg_front->Draw();
+    leg_back->Draw();
+
+    // TITLE
+    { TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.05);
+      lab.DrawLatex(0.50,0.965,Form("Front & Back Cluster Energy - %s - Ext %d", moduleUsed, extNum));
+    }
+
+    SaveCanvas(cE_fb, Form("%s/cluster_energy_fb", extDir.Data()));
+    delete cE_fb;
+  }
 
   // ----------------- Extra plots per extension ------------------
   {
@@ -611,10 +813,10 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
 
     // energy vs sigmaXY
     TCanvas* c2=new TCanvas(Form("c_E_sigmaxy_ext%d",extNum),"Energy vs sigmaxy",800,600);
-    c2->cd(); henergy_sigmaxy->SetTitle("Cluster Energy vs #sigma_{xy}");
-    henergy_sigmaxy->GetXaxis()->SetTitle("Energy [keV]");
-    henergy_sigmaxy->GetYaxis()->SetTitle("#sigma_{xy} [pix]");
-    henergy_sigmaxy->Draw("COLZ");
+    c2->cd(); R.henergy_sigmaxy->SetTitle("Cluster Energy vs #sigma_{xy}");
+    R.henergy_sigmaxy->GetXaxis()->SetTitle("Energy [keV]");
+    R.henergy_sigmaxy->GetYaxis()->SetTitle("#sigma_{xy} [pix]");
+    R.henergy_sigmaxy->Draw("COLZ");
     SaveCanvas(c2, Form("%s/energy_vs_sigmaXY", extDir.Data())); delete c2;
 
     // sigma hists
@@ -842,22 +1044,21 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
         c->Divide(2,2);
         int pad=1;
         for (int e=1;e<=4;++e){
-        if (!R[e].hEnergy){ ++pad; continue; }
+        if (!R[e].hEnergy_front){ ++pad; continue; }
         c->cd(pad++); gPad->SetGridx(); gPad->SetGridy(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
 
-        TH1F* h=(TH1F*)R[e].hEnergy->Clone();
+        TH1F* h=(TH1F*)R[e].hEnergy_front->Clone();
         h->SetTitle(";Energy [keV];Counts");
         h->SetFillColorAlpha(kGray+1,0.60); 
         h->SetLineColor(kGray+2); 
         h->SetBarWidth(0.95); 
         h->SetBarOffset(0.025);
-        // h->SetMaximum(1.15*ymaxEnergy); 
-        // h->Draw("BAR");
         h->SetMaximum(1.15 * ymaxEnergy);
         h->GetYaxis()->SetNoExponent(true);   // avoid "×10^3" label
         h->GetYaxis()->SetMaxDigits(3);
         h->Draw("BAR");
-        auto outline=(TH1F*)h->Clone(Form("hEout_cmp_%d",e)); outline->SetFillStyle(0); outline->SetLineColor(kBlack); outline->SetLineWidth(2); outline->Draw("BAR SAME");
+        auto outline=(TH1F*)h->Clone(Form("hEout_cmp_%d",e)); outline->SetFillStyle(0); outline->SetLineColor(kBlack); outline->SetLineWidth(2); 
+        outline->Draw("BAR SAME");
 
         // draw fitted components using stored params
         TF1* g1=new TF1(Form("cEg1_%d",e),"gaus",R[e].mu1-4*R[e].s1, R[e].mu1+4*R[e].s1);
@@ -872,12 +1073,6 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
         g1->SetNpx(600); g2->SetNpx(600);
         g1->SetLineColor(kRed+1);  g1->SetLineWidth(3);
         g2->SetLineColor(kBlue+1); g2->SetLineWidth(3);
-
-        // ensure headroom for curves too
-        // double ymaxPanel = 1.15 * std::max( { h->GetMaximum(), A1, A2 } );
-        // h->SetMaximum(ymaxPanel);
-
-        
 
         g1->Draw("SAME");
         g2->Draw("SAME");
@@ -894,45 +1089,213 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
     delete c;
   }
 
-  // -------------------- summary log --------------------
-  std::ofstream log(baseTag + "/summary.log");
-  log << "Summary for " << baseTag << "  (Module: " << moduleUsed << ")\n";
-  log << "================================================================\n";
+// ----------------- (4) Energy comparison Front and Back 2×2 ----------------------
+  {
+        TCanvas* c = new TCanvas("compare_energy","Energy 2x2", 1400, 1000);
+        c->Divide(2,2);
+        int pad=1;
+        for (int e=1;e<=4;++e){
+        if (!R[e].hEnergy_front){ ++pad; continue; }
+        c->cd(pad++); gPad->SetGridx(); gPad->SetGridy(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
+        
+        // ----------- FRONT HIST ---------
+        TH1F* h_front=(TH1F*)R[e].hEnergy_front->Clone();
+        h_front->SetTitle(";Energy [keV];Counts");
+        h_front->SetFillColorAlpha(kRed+1,0.5);
+        h_front->SetLineColor(kRed+2);
+        h_front->SetBarWidth(0.95);
+        h_front->SetBarOffset(0.05);
+        h_front->SetMaximum(1.15 * ymaxEnergy);
+        h_front->GetYaxis()->SetNoExponent(true);   // avoid "×10^3" label
+        h_front->GetYaxis()->SetMaxDigits(3);
+        h_front->Draw("BAR");
+
+        auto frontOutline = (TH1F*)R[e].hEnergy_front->Clone("hE_outline_front");
+        frontOutline->SetFillStyle(0); frontOutline->SetLineColor(kBlack);
+        frontOutline->SetLineWidth(1);
+        frontOutline->Draw("BAR SAME");
+
+        // ----------- BACK HIST ---------
+        TH1F* h_back=(TH1F*)R[e].hEnergy_back->Clone();
+        h_back->SetTitle(";Energy [keV];Counts");
+        h_back->SetFillColorAlpha(kBlue+1,0.5);
+        h_back->SetLineColor(kBlue+2);
+        h_back->SetBarWidth(0.95);
+        h_back->SetBarOffset(0.05);
+        h_back->SetMaximum(1.15 * ymaxEnergy);
+        h_back->GetYaxis()->SetNoExponent(true);   // avoid "×10^3" label
+        h_back->GetYaxis()->SetMaxDigits(3);
+        h_back->Draw("BAR SAME");
+
+        auto backOutline = (TH1F*)R[e].hEnergy_back->Clone("hE_outline_back");
+        backOutline->SetFillStyle(0); backOutline->SetLineColor(kBlack);
+        backOutline->SetLineWidth(1);
+        backOutline->Draw("BAR SAME");
+
+
+        // draw fitted components using stored params
+        TF1* g1=new TF1(Form("cEg1_%d",e),"gaus", R[e].mu1-4*R[e].s1, R[e].mu1+4*R[e].s1);
+        TF1* g2=new TF1(Form("cEg2_%d",e),"gaus", R[e].mu2-4*R[e].s2, R[e].mu2+4*R[e].s2);
+        TF1* g3=new TF1(Form("cEg3_%d",e),"gaus", R[e].mu3-4*R[e].s3, R[e].mu3+4*R[e].s3);
+        TF1* g4=new TF1(Form("cEg4_%d",e),"gaus", R[e].mu4-4*R[e].s4, R[e].mu4+4*R[e].s4);
+
+        // fallback if a fit failed
+        const double A1 = (R[e].A1>0 ? R[e].A1 : backOutline->GetMaximum());
+        const double A2 = (R[e].A2>0 ? R[e].A2 : 0.3*backOutline->GetMaximum());
+        const double A3 = (R[e].A3>0 ? R[e].A3 : backOutline->GetMaximum());
+        const double A4 = (R[e].A4>0 ? R[e].A4 : 0.3*backOutline->GetMaximum());
+
+        g1->SetParameters(R[e].A1, R[e].mu1, std::max(0.03, R[e].s1));
+        g2->SetParameters(R[e].A2, R[e].mu2, std::max(0.03, R[e].s2));
+        g1->SetNpx(600); g2->SetNpx(600);
+        g3->SetParameters(R[e].A3, R[e].mu3, std::max(0.03, R[e].s3));
+        g4->SetParameters(R[e].A4, R[e].mu4, std::max(0.03, R[e].s4));
+        g3->SetNpx(600); g4->SetNpx(600);
+   
+
+        // ---- DRAW FITS (already existing objects: g1/g2/g3/g4) ----
+        g1->SetLineColor(kRed+1);   g1->SetLineWidth(4); g1->SetLineStyle(1); g1->Draw("SAME");
+        g2->SetLineColor(kRed+2);   g2->SetLineWidth(2); g2->SetLineStyle(1); g2->Draw("SAME");
+        g3->SetLineColor(kBlue+1);  g3->SetLineWidth(4); g3->SetLineStyle(1); g3->Draw("SAME"); 
+        g4->SetLineColor(kBlue+2);  g4->SetLineWidth(2); g4->SetLineStyle(1); g4->Draw("SAME");
+
+        // ensure headroom for curves too
+        // double ymaxPanel = 1.2 * std::max( { frontOutline->GetMaximum(), A1, A2, backOutline->GetMaximum(), A3, A4 } );
+        // frontOutline->SetMaximum(ymaxPanel);
+
+        g1->Draw("SAME");
+        g2->Draw("SAME");
+        g3->Draw("SAME");
+        g4->Draw("SAME");
+
+        auto leg_front = new TLegend(0.145, 0.65, 0.405, 0.89); // Left top position
+        leg_front->SetBorderSize(1);
+        leg_front->SetFillStyle(1001);
+        leg_front->SetTextFont(42);
+        leg_front->SetTextSize(0.030);
+        leg_front->AddEntry(R[e].hEnergy_front, "#sigma_{xy}<1 (front)", "f");
+        leg_front->AddEntry(g1, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R[e].mu1, R[e].mu1_err, R[e].s1, R[e].s1_err), "l");
+        leg_front->AddEntry(g2, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R[e].mu2, R[e].mu2_err, R[e].s2, R[e].s2_err), "l");
+
+
+        auto leg_back = new TLegend(0.63, 0.65, 0.89, 0.89); // Right top position
+        leg_back->SetBorderSize(1);
+        leg_back->SetFillStyle(1001);
+        leg_back->SetTextFont(42);
+        leg_back->SetTextSize(0.030);
+        leg_back->AddEntry(R[e].hEnergy_back, "#sigma_{xy}>1 (back)", "f");
+        leg_back->AddEntry(g3, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R[e].mu3, R[e].mu3_err, R[e].s3, R[e].s3_err), "l");
+        leg_back->AddEntry(g4, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R[e].mu4, R[e].mu4_err, R[e].s4, R[e].s4_err), "l");
+
+      
+        leg_front->Draw();
+        leg_back->Draw();
+
+        TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.05);
+        lab.DrawLatex(0.50,0.965,Form("Front and Back Energy Spectrum - %s - Ext %d", moduleUsed, e));
+    }
+    SaveCanvas(c, Form("%s/compare/compare_energy_front_back_2x2", baseTag.Data()));
+    delete c;
+  }
+// ----------------- (5) Energy vs. Sigmaxy comparison 2×2 ------------------
+  {
+    TCanvas* c = new TCanvas("compare_front","Front 2x2", 2800, 2200);
+    c->Divide(2,2);
+    int pad=1;
+    for (int e=1; e<=4; ++e){
+      if (!R[e].henergy_sigmaxy) { ++pad; continue; }
+      c->cd(pad++);  
+      R[e].henergy_sigmaxy->SetTitle("");
+      R[e].henergy_sigmaxy->GetXaxis()->SetTitle("Energy [keV]");
+      R[e].henergy_sigmaxy->GetYaxis()->SetTitle("#sigma_{xy} [pix]");
+      R[e].henergy_sigmaxy->Draw("COLZ");
+      {TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.05);
+      lab.DrawLatex(0.50,0.965,Form("Cluster Energy vs #sigma_{xy} - %s - Ext %d", moduleUsed, e));}
+    }
+    SaveCanvas(c, Form("%s/compare/compare_E_Sxy_2x2", baseTag.Data()));
+    delete c;
+  }
+
+  // -------------------- Summary log Energy --------------------
+  std::ofstream energy_log(baseTag + "/energy_summary.csv");
+  energy_log << "Extension,location,energypeak1,energypeak2\n";
   for (int e=1; e<=4; ++e){
     if (R[e].nFiles==0) continue;
-    log << "----------------------------------------------------------------\n";
-    log << "Extension: ext" << e << "\n";
-    log << "Files combined: " << R[e].nFiles << "\n";
-    log << "Total clusters: " << R[e].totalClusters << "\n";
-    log << "Accepted (energy window): " << R[e].nAcceptedEnergy << "\n";
-    log << "Accepted (front-side):    " << R[e].nAcceptedFront  << "\n";
-    log << "Accepted (back-side):     " << R[e].nAcceptedBack   << "\n";
-    log << "Front integral [e-]: " << R[e].frontIntegral_e << "\n";
-    log << "Back  integral [e-]: " << R[e].backIntegral_e  << "\n";
-    log << "CTI fractions for front events (w.r.t. center)\n";
-    log << "  center charge: " << R[e].centerCharge << "\n";
-    log << "  above=" << R[e].fAbove
+    energy_log 
+      << e << ","
+      << 0 << ","
+      << R[e].mu1 << " +/- " << R[e].mu1_err << ","
+      << R[e].mu2 << " +/- " << R[e].mu2_err << "\n";
+    energy_log 
+      << e << ","
+      << 1 << ","
+      << R[e].mu3 << " +/- " << R[e].mu3_err << ","
+      << R[e].mu4 << " +/- " << R[e].mu4_err << "\n";
+  }
+  energy_log.close();
+
+  std::ofstream CTI_log(baseTag + "/CTI_summary.csv");
+  CTI_log << "Extension,location,fraction,Mean,RMS,Skewness,Integral\n";
+  for (int e=1; e<=4; ++e){
+    if (R[e].nFiles==0) continue;
+    CTI_log 
+      << e << ","
+      << 0 << ","
+      << R[e].fRight << ","
+      << R[e].projX_mean << ","
+      << R[e].projX_rms << ","
+      << R[e].projX_skew << ","
+      << R[e].projX_int_e << "\n";
+    CTI_log 
+      << e << ","
+      << 1 << ","
+      << R[e].fAbove << ","
+      << R[e].projY_mean << ","
+      << R[e].projY_rms << ","
+      << R[e].projY_skew << ","
+      << R[e].projY_int_e << "\n";
+  }
+  CTI_log.close();
+
+  // -------------------- main log --------------------
+  std::ofstream main_log(baseTag + "/summary.log");
+  main_log << "Summary for " << baseTag << "  (Module: " << moduleUsed << ")\n";
+  main_log << "================================================================\n";
+  for (int e=1; e<=4; ++e){
+    if (R[e].nFiles==0) continue;
+    main_log << "----------------------------------------------------------------\n";
+    main_log << "Extension: ext" << e << "\n";
+    main_log << "Files combined: " << R[e].nFiles << "\n";
+    main_log << "Total clusters: " << R[e].totalClusters << "\n";
+    main_log << "Accepted (energy window): " << R[e].nAcceptedEnergy << "\n";
+    main_log << "Accepted (front-side):    " << R[e].nAcceptedFront  << "\n";
+    main_log << "Accepted (back-side):     " << R[e].nAcceptedBack   << "\n";
+    main_log << "Front integral [e-]: " << R[e].frontIntegral_e << "\n";
+    main_log << "Back  integral [e-]: " << R[e].backIntegral_e  << "\n";
+    main_log << "CTI fractions for front events (w.r.t. center)\n";
+    main_log << "  center charge: " << R[e].centerCharge << "\n";
+    main_log << "  above=" << R[e].fAbove
         << " below=" << R[e].fBelow
         << " right=" << R[e].fRight
         << " left="  << R[e].fLeft  << "\n";
-    log << "Back-side projections (slabs at [-4,-3] px)\n";
-    log << "  ProjY (X slab) integral [e-]: " << R[e].projY_int_e
+    main_log << "Back-side projections (slabs at [-4,-3] px)\n";
+    main_log << "  ProjY (X slab) integral [e-]: " << R[e].projY_int_e
         << " | mean=" << R[e].projY_mean
         << " RMS="    << R[e].projY_rms
         << " skew="   << R[e].projY_skew << "\n";
-    log << "  ProjX (Y slab) integral [e-]: " << R[e].projX_int_e
+    main_log << "  ProjX (Y slab) integral [e-]: " << R[e].projX_int_e
         << " | mean=" << R[e].projX_mean
         << " RMS="    << R[e].projX_rms
         << " skew="   << R[e].projX_skew << "\n";
-    log << "Energy fit (two separate Gaussians in per-peak windows)\n";
-    log << "  mu1=" << R[e].mu1 << " +/- " << R[e].mu1_err
+    main_log << "Energy fit (two separate Gaussians in per-peak windows)\n";
+    main_log << "  mu1=" << R[e].mu1 << " +/- " << R[e].mu1_err
         << "  sigma1=" << R[e].s1 << " +/- " << R[e].s1_err << "\n";
-    log << "  mu2=" << R[e].mu2 << " +/- " << R[e].mu2_err
+    main_log << "  mu2=" << R[e].mu2 << " +/- " << R[e].mu2_err
         << "  sigma2=" << R[e].s2 << " +/- " << R[e].s2_err << "\n";
-    log << "  chi2/ndf=" << R[e].chi2 << "/" << R[e].ndf
+    main_log << "  chi2/ndf=" << R[e].chi2 << "/" << R[e].ndf
         << "  p=" << R[e].p << "\n";
   }
-  log.close();
+  main_log.close();
 
   std::cout << "[DONE] Outputs under: " << baseTag << "\n";
 }
