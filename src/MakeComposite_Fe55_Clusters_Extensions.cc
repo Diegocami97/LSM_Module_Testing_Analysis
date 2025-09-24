@@ -846,6 +846,7 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
         c->cd(pad++); gPad->SetGridx(); gPad->SetGridy(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
 
         TH1F* h=(TH1F*)R[e].hEnergy->Clone();
+
         h->SetTitle(";Energy [keV];Counts");
         h->SetFillColorAlpha(kGray+1,0.60); 
         h->SetLineColor(kGray+2); 
