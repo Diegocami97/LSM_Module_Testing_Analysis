@@ -28,6 +28,8 @@
 #include "TPad.h"
 #include "TImage.h"
 #include "TSpectrum.h"
+#include "TGraphErrors.h"
+#include "TAxis.h"
 
 
 // --- For cling vector dictionaries ---
@@ -39,20 +41,20 @@
 #endif
 
 // -------------------------- Config ---------------------------------
-int    NBINS_COMP_X   = 401;     // composite grid bins per axis
-int    NBINS_COMP_Y   = 401;     // composite grid bins per axis
-double RANGE_COMP   = 4.0;     // +/- range (pixels)
+int    NBINS_COMP_X   = 401;     // composite cluster grid bins per axis
+int    NBINS_COMP_Y   = 401;     // composite cluster grid bins per axis
+double RANGE_COMP   = 4.0;     // +/- range for composite cluster histograms(pixels)
 int    BINS_PER_PIX = 25;      // sampling density for pixel maps
-double E_PER_ADU    = 3.8;     // eV->ADU scaling used in printouts
-double ENE_MIN      = 4.5;     // energy window [keV]
-double ENE_MAX      = 7.0;
-double SIGMA_FRONT_CUT = 1;  // front/back cut
+double E_PER_e    = 3.74;     // eV->e- conversion from eV to electrons
+double ENE_MIN      = 4.5;     // energy window min for Fe events in [keV]
+double ENE_MAX      = 7.0;   // energy window max for Fe events in [keV]
+double SIGMA_FRONT_CUT = 1;  // front/back cut in sigma_xy [pixels]
 double    SINGLE_e_RES_e = 0.15; // single-e resolution [e-]
 double   eNUM_MIN       = 0.5;       // min number of electrons per pixel
-double   eNUM_MAX       = 2000.5;      // max number of electrons per pixel
+double   eNUM_MAX       = 1900.5;      // max number of electrons per pixel
 int   E_PIXEL_BIN_NUM = (eNUM_MAX-eNUM_MIN)/SINGLE_e_RES_e; // binning for pixel energy histograms
-int min_e_number_display = 530;
-int max_e_number_display = 550;
+int min_e_number_display =175; // minimum number of electrons to display in pixel energy histograms
+int max_e_number_display =200; // maximum number of electrons to display in pixel energy histograms
 
 // --------------------- Small helpers --------------------------------
 
@@ -179,8 +181,12 @@ struct ExtResults {
     TH1F*  hEnergy_front = nullptr;
     TH1F*  hEnergy_back = nullptr;
     TH2F*  henergy_sigmaxy = nullptr;
-    TH2F*  henergy_sigmaxy2 = nullptr;
-    TH1F*  hPixel_Energy = nullptr;
+    TH1F*  hPixelEnergy = nullptr;
+    TH1I*  hClusterSize = nullptr;
+    TH1F*  hMaxPixelEnergy = nullptr;
+    TH2F*  henergy_clustersize = nullptr;
+    TH2F*  hmaxpixelenergy_clustersize = nullptr;
+    TH2F*  hclustersize_sigmaxy = nullptr;
 
 
     // projections (normalized copies for compare tiles)
@@ -199,7 +205,8 @@ struct ExtResults {
     double centerCharge = 0.0;
     double fAbove=0.0, fBelow=0.0, fRight=0.0, fLeft=0.0;
 
-    // energy fits (separate gaussians in windows)
+    // energy fits (separate gaussians in windows)si
+
     double A1=0, A1_err=0;   // peak heights for Kα
     double A2=0, A2_err=0;   // peak heights for Kβ
     double mu1=0, mu1_err=0, s1=0, s1_err=0;
@@ -212,6 +219,11 @@ struct ExtResults {
     double mu3=0, mu3_err=0, s3=0, s3_err=0;
     double mu4=0, mu4_err=0, s4=0, s4_err=0;
     double chi2_2=0; int ndf_2=0; double p_2=0;
+
+    // from info tree (per-extension calibration: gain, single-e resolution, DC)
+    double gainext=0, gainext_err=0;
+    double sigext=0, sigext_err=0;
+    double dcext=0, dcext_err=0;
 };
 
 // --------------------- per-extension processing ----------------------
@@ -233,12 +245,46 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
   TChain chain("clustersRec");
   for (auto& f : files) chain.Add(f);
 
+  // Read info tree from first file (gain, single-e resolution, DC per extension)
+  {
+    TFile* finfo = TFile::Open(files[0]);
+    if (finfo && !finfo->IsZombie()) {
+      TTree* tinfo = (TTree*)finfo->Get("info");
+      if (tinfo && tinfo->GetEntries() > 0) {
+        TString extPrefix = Form("ext%d_", extNum);
+        double gainext_val = 0, gainext_err_val = 0;
+        double sigext_val = 0, sigext_err_val = 0;
+        double dcext_val = 0, dcext_err_val = 0;
+        const char* gain_br = Form("%sgainext", extPrefix.Data());
+        const char* gainerr_br = Form("%sgainext_err", extPrefix.Data());
+        const char* sig_br = Form("%ssigext", extPrefix.Data());
+        const char* sigerr_br = Form("%ssigext_err", extPrefix.Data());
+        const char* dc_br = Form("%sdcext", extPrefix.Data());
+        const char* dcerr_br = Form("%sdcext_err", extPrefix.Data());
+        if (tinfo->FindBranch(gain_br))    tinfo->SetBranchAddress(gain_br,    &gainext_val);
+        if (tinfo->FindBranch(gainerr_br)) tinfo->SetBranchAddress(gainerr_br, &gainext_err_val);
+        if (tinfo->FindBranch(sig_br))     tinfo->SetBranchAddress(sig_br,     &sigext_val);
+        if (tinfo->FindBranch(sigerr_br))  tinfo->SetBranchAddress(sigerr_br,  &sigext_err_val);
+        if (tinfo->FindBranch(dc_br))      tinfo->SetBranchAddress(dc_br,      &dcext_val);
+        if (tinfo->FindBranch(dcerr_br))   tinfo->SetBranchAddress(dcerr_br,   &dcext_err_val);
+        tinfo->GetEntry(0);
+        R.gainext = gainext_val;   R.gainext_err = gainext_err_val;
+        R.sigext  = sigext_val;    R.sigext_err  = sigext_err_val;
+        R.dcext   = dcext_val;     R.dcext_err   = dcext_err_val;
+      }
+      finfo->Close();
+    }
+    if (finfo) delete finfo;
+  }
+
   // Branches
   std::vector<std::vector<int>>   *pixels_x=nullptr, *pixels_y=nullptr;
   std::vector<std::vector<float>> *pixels_E=nullptr;
   std::vector<float> *PosX=nullptr, *PosY=nullptr;
   std::vector<float> *rmsxy=nullptr, *rmsx=nullptr, *rmsy=nullptr;
   std::vector<float> *Energy=nullptr;
+  std::vector<float> *Qmax=nullptr;
+  std::vector<int> *Npix=nullptr;
 
   chain.SetBranchAddress("pixels_x", &pixels_x);
   chain.SetBranchAddress("pixels_y", &pixels_y);
@@ -249,6 +295,8 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
   chain.SetBranchAddress("fSTD_X",   &rmsx);
   chain.SetBranchAddress("fSTD_Y",   &rmsy);
   chain.SetBranchAddress("Energy",   &Energy);
+  chain.SetBranchAddress("Qmax",     &Qmax);
+  chain.SetBranchAddress("Npix",     &Npix);
 
   // Image sizes based on image_number (as per your prior convention)
   int nColumns=0, nRows=0;
@@ -257,41 +305,44 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
   else if (image_number==6){ nColumns=640;  nRows=1600; NBINS_COMP_Y=41;}
   else if (image_number==7){ nColumns=640;  nRows=1600; NBINS_COMP_X=41;}
   else if (image_number==8){ nColumns=3500;  nRows=500; }
+  else if (image_number==11){ nColumns=6300;  nRows=12; }
   else { nColumns=640; nRows=640; }
 
-  // Hists
-  R.hFront  = new TH2D(Form("hFront_ext%d",extNum),  "Composite Cluster Front Events",
-  NBINS_COMP_X, -RANGE_COMP, RANGE_COMP,
-  NBINS_COMP_Y, -RANGE_COMP, RANGE_COMP);
-  R.hBack   = new TH2D(Form("hBack_ext%d",extNum),   "Composite Cluster Back Events",
-  NBINS_COMP_X, -RANGE_COMP, RANGE_COMP,
-  NBINS_COMP_Y, -RANGE_COMP, RANGE_COMP);
-  R.hEnergy = new TH1F(Form("hEnergy_ext%d",extNum), "hClusterE",
-                       50, ENE_MIN, ENE_MAX);
+  // Composite cluster histograms for CTI studies
+  R.hFront  = new TH2D(Form("hFront_ext%d",extNum),  "Composite Cluster Front Events",NBINS_COMP_X, -RANGE_COMP, RANGE_COMP,NBINS_COMP_Y, -RANGE_COMP, RANGE_COMP);
+  R.hBack   = new TH2D(Form("hBack_ext%d",extNum),   "Composite Cluster Back Events",NBINS_COMP_X, -RANGE_COMP, RANGE_COMP,NBINS_COMP_Y, -RANGE_COMP, RANGE_COMP);
+  
+  // Cluster energy distribution (in keV)
+  // R.hEnergy = new TH1F(Form("hEnergy_ext%d",extNum), "hClusterE",140, 0, 2);
+  R.hEnergy = new TH1F(Form("hEnergy_ext%d",extNum), "hClusterE",30000, 0, 1500);
+  R.hEnergy_front = new TH1F(Form("hEnergy_ext_front%d",extNum), "hClusterE",50, ENE_MIN, ENE_MAX);
+  R.hEnergy_back = new TH1F(Form("hEnergy_ext_back%d",extNum), "hClusterE",50, ENE_MIN, ENE_MAX);
 
-  R.hEnergy_front = new TH1F(Form("hEnergy_ext%d",extNum), "hClusterE",
-                       50, ENE_MIN, ENE_MAX);
-  R.hEnergy_back = new TH1F(Form("hEnergy_ext%d",extNum), "hClusterE",
-                       50, ENE_MIN, ENE_MAX);
+  // Cluster energy vs sigma_xy
+  R.henergy_sigmaxy= new TH2F(Form("hE_sigmaxy_ext%d",extNum),"Energy vs #sigma_{xy}", 50, ENE_MIN, ENE_MAX, 50, 0, 2.0);
 
+  // Cluster size distribution (in pixels)
+  R.hClusterSize = new TH1I(Form("hClusterSize_ext%d",extNum), "hClusterSize", 100, 0.5, 100.5);
+
+  // Max pixel energy distribution (in keV)
+  R.hMaxPixelEnergy = new TH1F(Form("hMaxPixelE_ext%d",extNum), "hMaxPixelE", 50, ENE_MIN, ENE_MAX);
 
   // Pixel energy distribution (in electrons)
-  R.hPixel_Energy = new TH1F(Form("hPixelE_ext%d",extNum), "hPixelE",
-                             E_PIXEL_BIN_NUM, eNUM_MIN, eNUM_MAX); // electrons
+  R.hPixelEnergy = new TH1F(Form("hPixelE_ext%d",extNum), "hPixelE",E_PIXEL_BIN_NUM, eNUM_MIN, eNUM_MAX); // electrons
+
+  // Cluster energy vs cluster size
+  R.henergy_clustersize = new TH2F(Form("hE_clustersize_ext%d",extNum),"Energy vs Cluster Size", 140, 0.0, ENE_MAX, 100, 0.5, 100.5);
+
+  R.hmaxpixelenergy_clustersize = new TH2F(Form("hMaxPixelE_clustersize_ext%d",extNum),"Max Pixel Energy vs Cluster Size", 140, 0.0, ENE_MAX, 100, 0.5, 100.5);
 
   // Additional distributions (saved later)
   TH1F* hPosX = new TH1F(Form("hPosX_ext%d",extNum), "PosX", 20, 0, 1);   // range updated below
   TH1F* hPosY = new TH1F(Form("hPosY_ext%d",extNum), "PosY", 20, 0, 1);
-  TH2F* hPosXY= new TH2F(Form("hPosXY_ext%d",extNum),"PosXY", 10, 0, 1, 10, 0, 1);
-  TH1F* hSigmaxy = new TH1F(Form("hSigmaxy_ext%d",extNum), "Sigmaxy", 50, 0, 2.0);
-  TH1F* hSigmax  = new TH1F(Form("hSigmax_ext%d", extNum),  "Sigmax",  50, 0, 2.0);
-  TH1F* hSigmay  = new TH1F(Form("hSigmay_ext%d", extNum),  "Sigmay",  50, 0, 2.0);
+  TH1F* hSigmaxy = new TH1F(Form("hSigmaxy_ext%d",extNum), "Sigmaxy", 200, 0, 8.0);
+  TH1F* hSigmax  = new TH1F(Form("hSigmax_ext%d", extNum),  "Sigmax",  200, 0, 8.0);
+  TH1F* hSigmay  = new TH1F(Form("hSigmay_ext%d", extNum),  "Sigmay",  200, 0, 8.0);
   TH2F* hposx_sigmaxy = nullptr;
-  R.henergy_sigmaxy= new TH2F(Form("hE_sigmaxy_ext%d",extNum),
-                                  "Energy vs #sigma_{xy}", 50, ENE_MIN, ENE_MAX, 50, 0, 2.0);
-
-  
-
+  TH2F* hPosXY = nullptr;
   // finalize axis ranges for the helper hists
   hPosX->GetXaxis()->SetLimits(0, nColumns);
   hPosY->GetXaxis()->SetLimits(0, nRows);
@@ -305,51 +356,77 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
   for (Long64_t i=0;i<nEntries;++i){
     chain.GetEntry(i);
     const size_t nC = PosX->size();
-    R.totalClusters += nC;
+    R.totalClusters += nC; // total number of clusters in processed image
 
-    for (size_t n=0;n<nC;++n){
-      const double E = Energy->at(n);
-      const double x = PosX->at(n);
-      const double y = PosY->at(n);
-      const double sx= rmsx->at(n);
-      const double sy= rmsy->at(n);
-      const double sxy= std::sqrt(0.5*(sx*sx + sy*sy));
+    for (size_t n=0;n<nC;++n){ // here we loop over clusters
+      // cluster properties
+      const double E = Energy->at(n); // cluster energy in keV
+      const double x = PosX->at(n); // cluster mean position x in pixels
+      const double y = PosY->at(n); // cluster mean position y in pixels
+      const double sx= rmsx->at(n); // cluster sigma x in pixels
+      const double sy= rmsy->at(n); // cluster sigma y in pixels
+      const double sxy= std::sqrt(0.5*(sx*sx + sy*sy)); // cluster sigma_xy in pixels
+      const double npix = Npix->at(n); // cluster size in pixels
+      const double qmax= Qmax->at(n); // max pixel energy in keV for this cluster
 
+      // pixel properties
       const auto& px = pixels_x->at(n);
       const auto& py = pixels_y->at(n);
       const auto& pE = pixels_E->at(n);
 
-      // Fill pixel energy distribution (in electrons)
-      for (auto e : pE) R.hPixel_Energy->Fill(e*1000.0/E_PER_ADU);
-      // for (auto e : pE) R.hPixel_Energy->Fill(e);
-      
+      // histogram pixel energy in units of electrons instead of keV
+      for (auto e : pE) {
+      //   if(e>ENE_MIN && e<ENE_MAX){
+          double pixel_energy = e;
+          R.hPixelEnergy->Fill(pixel_energy*1000.0/E_PER_e);
+      //   }
+      }
+
+      R.hClusterSize->Fill(npix);
+      R.hMaxPixelEnergy->Fill(qmax);
+      R.henergy_clustersize->Fill(E, npix);
+      R.hmaxpixelenergy_clustersize->Fill(qmax, npix);
+      R.hEnergy->Fill(E);
+
+
 
       // book-keeping distributions for events in energy window
       if (E>ENE_MIN && E<ENE_MAX){
+
         hSigmaxy->Fill(sxy); hSigmax->Fill(sx); hSigmay->Fill(sy);
         hPosX->Fill(x); hPosY->Fill(y);
         hPosXY->Fill(x,y,E);
         hposx_sigmaxy->Fill(x, sxy, E);
         R.henergy_sigmaxy->Fill(E, sxy);
+        // R.hEnergy->Fill(E);
+
+        // R.hClusterSize->Fill(npix);
+        // R.hMaxPixelEnergy->Fill(qmax);
+        // R.henergy_clustersize->Fill(E, npix);
         R.nAcceptedEnergy++;
       }
 
       // choose variable for front/back split
       double sCutVar = sxy;
-      if (image_number==6) sCutVar = sx;
-      if (image_number==7) sCutVar = sy;
+      if (image_number==6 || image_number==9) sCutVar = sx;
+      if (image_number==7 || image_number==10) sCutVar = sy;
 
       // FRONT selection
       if (E>ENE_MIN && E<ENE_MAX && sCutVar < SIGMA_FRONT_CUT){
-        R.hEnergy->Fill(E);
+      // if (sCutVar < SIGMA_FRONT_CUT){
+        // R.hClusterSize->Fill(npix);
+        // R.hMaxPixelEnergy->Fill(qmax);
+        // R.hEnergy->Fill(E);
         R.hEnergy_front->Fill(E);
+        // for (auto e : pE) R.hPixelEnergy->Fill(e*1000.0/E_PER_e);
+
         TH2F* hview = VectorsToTH2F(px, py, pE, "h2_front_tmp");
         // Accumulate into composite centered on (x,y)
         for (int ix=1; ix<=NBINS_COMP_X; ++ix){
           for (int iy=1; iy<=NBINS_COMP_Y; ++iy){
             const double gx = x + R.hFront->GetXaxis()->GetBinLowEdge(ix);
             const double gy = y + R.hFront->GetYaxis()->GetBinLowEdge(iy);
-            const double bc = hview->GetBinContent(hview->FindBin(gx, gy)) / (BINS_PER_PIX*BINS_PER_PIX);
+            const double bc = hview->GetBinContent(hview->FindBin(gx, gy))/(BINS_PER_PIX*BINS_PER_PIX);
             R.hFront->SetBinContent(ix, iy, R.hFront->GetBinContent(ix,iy) + bc);
           }
         }
@@ -359,14 +436,16 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
 
       // BACK selection
       if (E>ENE_MIN && E<ENE_MAX && sCutVar > SIGMA_FRONT_CUT){
+      // if (sCutVar > SIGMA_FRONT_CUT){
         R.hEnergy_back->Fill(E);
-
-        TH2F* hview = VectorsToTH2F(px, py, pE, "h2_back_tmp");
+        // R.hClusterSize->Fill(npix);
+        // R.hMaxPixelEnergy->Fill(qmax);
+        TH2F* hview = VectorsToTH2F(px, py, pE, "h2_back_tmp"); // temporary histogram of pixel energies for this cluster
         for (int ix=1; ix<=NBINS_COMP_X; ++ix){
           for (int iy=1; iy<=NBINS_COMP_Y; ++iy){
-            const double gx = x + R.hBack->GetXaxis()->GetBinLowEdge(ix);
-            const double gy = y + R.hBack->GetYaxis()->GetBinLowEdge(iy);
-            const double bc = hview->GetBinContent(hview->FindBin(gx, gy)) / (BINS_PER_PIX*BINS_PER_PIX);
+            const double gx = x + R.hBack->GetXaxis()->GetBinLowEdge(ix); // gx is the global x position for composite cluster centered at (x,y)
+            const double gy = y + R.hBack->GetYaxis()->GetBinLowEdge(iy); // gy is the global y position for composite cluster centered at (x,y)
+            const double bc = hview->GetBinContent(hview->FindBin(gx, gy)) / (BINS_PER_PIX*BINS_PER_PIX); // bin content normalized by sampling density
             R.hBack->SetBinContent(ix, iy, R.hBack->GetBinContent(ix,iy) + bc);
           }
         }
@@ -381,8 +460,8 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
   if (R.nAcceptedBack >0) R.hBack ->Scale(1.0/R.nAcceptedBack);
 
   // Integrals in electrons
-  R.frontIntegral_e = R.hFront->Integral()*1000.0/E_PER_ADU;
-  R.backIntegral_e  = R.hBack ->Integral()*1000.0/E_PER_ADU;
+  R.frontIntegral_e = R.hFront->Integral()*1000.0/E_PER_e;
+  R.backIntegral_e  = R.hBack ->Integral()*1000.0/E_PER_e;
 
   // --------- FRONT: CTI fractions w.r.t center ----------
   // regions relative to pixel boxes:
@@ -393,9 +472,9 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
   // left  : x in [-1.5,-0.5],y in [-0.5,0.5]
   if (R.hFront){
     const double c = SumRect(R.hFront, -0.5, 0.5,  -0.5,  0.5);
-    const double a = SumRect(R.hFront, -0.5, 1.5,   0.5,  2.5);
+    const double a = SumRect(R.hFront, -0.5, 0.5, 1.5, 2.5);
     const double b = SumRect(R.hFront, -0.5, 0.5,  -1.5, -0.5);
-    const double r = SumRect(R.hFront,  1.5, -0.5,  2.5,  0.5);
+    const double r = SumRect(R.hFront,  1.5, 2.5, -0.5, 0.5);
     const double l = SumRect(R.hFront, -1.5,-0.5,  -0.5,  0.5);
     R.centerCharge = c;
     if (c>0){
@@ -410,8 +489,8 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     TH1D* hleft  = ProjYRect(R.hBack, Form("hleft_ext%d", extNum), -4.0, -3.0);
 
     // Store stats BEFORE normalization
-    R.projY_int_e = hleft ->Integral()*1000.0/E_PER_ADU;
-    R.projX_int_e = hbelow->Integral()*1000.0/E_PER_ADU;
+    R.projY_int_e = hleft ->Integral()*1000.0/E_PER_e;
+    R.projX_int_e = hbelow->Integral()*1000.0/E_PER_e;
 
     R.projY_mean = hleft->GetMean();  R.projY_rms = hleft->GetRMS();  R.projY_skew = hleft->GetSkewness();
     R.projX_mean = hbelow->GetMean(); R.projX_rms = hbelow->GetRMS(); R.projX_skew = hbelow->GetSkewness();
@@ -551,69 +630,53 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     auto outline=(TH1F*)R.hEnergy_front->Clone(Form("hE_outline_ext%d",extNum));
     outline->SetFillStyle(0); outline->SetLineColor(kBlack); outline->SetLineWidth(2); outline->Draw("BAR SAME");
 
-    // // fit two per-peak windows
-    // TF1* g1 = new TF1(Form("g1_ext%d",extNum),"gaus",5.0,6.4);
-    // TF1* g2 = new TF1(Form("g2_ext%d",extNum),"gaus",6.0,6.8);
-    // g1->SetParameters(R.hEnergy_front->GetMaximum(), 6.4, 0.10);
-    // g2->SetParameters(R.hEnergy_front->GetMaximum()/3.0, 6.40, 0.12);
-    // g1->SetParLimits(2,0.03,0.40); 
+    const double g1_lo = 5.3, g1_hi = 6.1;
+    TF1* g1 = new TF1(Form("g1_ext%d",extNum),"gaus", g1_lo, g1_hi);
+    TF1* g2 = nullptr;
+    double g2_left = 6.0, g2_right = 6.8;
 
-    // g2->SetParLimits(2,0.03,0.40);
-    // R.hEnergy_front->Fit(g1,"RQ0S"); 
-    
-    // R.hEnergy_front->Fit(g2,"RQ0S");
+    if (R.hEnergy_front->GetEntries() > 0) {
+      g1->SetParameters(R.hEnergy_front->GetMaximum(), 5.9, 0.10);  // 5.9 keV = Fe-55 Kα
+      g1->SetParLimits(2, 0.03, 0.40);
+      R.hEnergy_front->Fit(g1, "RQ0S");
+      double mu1 = g1->GetParameter(1);
+      double sigma1 = g1->GetParameter(2);
+      double two_sig = sigma1 * 2;
+      g2_left = std::max(ENE_MIN, mu1 + two_sig);
+      g2_right = std::min(ENE_MAX, g2_left + 1.0);  // fixed 1 keV width (original behavior)
+      if (g2_right <= g2_left) g2_right = std::min(ENE_MAX, g2_left + 0.5);
+      g2 = new TF1(Form("g2_ext%d",extNum), "gaus", g2_left, g2_right);
+      g2->SetParameters(R.hEnergy_front->GetMaximum() / 3.0, (g2_left + g2_right) / 2.0, 0.12);
+      g2->SetParLimits(2, 0.03, 0.40);
+      R.hEnergy_front->Fit(g2, "RQ0S");
 
-    // g1->SetLineColor(kRed+1); g1->SetLineWidth(3);
-    // g2->SetLineColor(kBlue+1); g2->SetLineWidth(3);
-    // g1->Draw("SAME"); g2->Draw("SAME");
+      g1->SetLineColor(kRed+1); g1->SetLineWidth(3);
+      g2->SetLineColor(kBlue+1); g2->SetLineWidth(3);
+      g1->Draw("SAME"); g2->Draw("SAME");
+      R.mu1 = g1->GetParameter(1); R.mu1_err = g1->GetParError(1);
+      R.s1  = g1->GetParameter(2); R.s1_err  = g1->GetParError(2);
+      R.mu2 = g2->GetParameter(1); R.mu2_err = g2->GetParError(1);
+      R.s2  = g2->GetParameter(2); R.s2_err  = g2->GetParError(2);
+      R.A1  = g1->GetParameter(0); R.A1_err  = g1->GetParError(0);
+      R.A2  = g2->GetParameter(0); R.A2_err  = g2->GetParError(0);
+    } else {
+      std::cerr << "Front energy histogram empty for ext " << extNum << ", using default params" << std::endl;
+      R.mu1 = 5.9; R.mu1_err = 0; R.s1 = 0.12; R.s1_err = 0;
+      R.mu2 = 6.4; R.mu2_err = 0; R.s2 = 0.12; R.s2_err = 0;
+      R.A1 = 0; R.A1_err = 0; R.A2 = 0; R.A2_err = 0;
+    }
 
-    // fit two per-peak windows
-    TF1* g1 = new TF1(Form("g1_ext%d",extNum),"gaus",4.5,6.3); 
-    g1->SetParameters(R.hEnergy_front->GetMaximum(), 6.4, 0.10);
-    g1->SetParLimits(2,0.03,0.40);
-    R.hEnergy_front->Fit(g1,"RQ0S");
-
-    // Get the mean and 2*sigma from first fit
-    double mu1 = g1->GetParameter(1);
-    double sigma1 = g1->GetParameter(2);
-    double two_sig = sigma1 * 2;  
-
-    // Set second peak window based on first peak
-    double g2_left = mu1 + two_sig;
-    double g2_right = g2_left + 1;
-
-    TF1* g2 = new TF1(Form("g2_ext%d",extNum),"gaus",g2_left,g2_right);
-    g2->SetParameters(R.hEnergy_front->GetMaximum()/3.0, (g2_left+g2_right)/2.0, 0.12);  // center initial guess
-    // g2->SetParameters(R.hEnergy_front->GetMaximum()/3.0, 5.25, 0.12);  // center initial guess
-    g2->SetParLimits(2,0.03,0.40);
-    R.hEnergy_front->Fit(g2,"RQ0S");
-
-    double mu2 = g2->GetParameter(1);
-    double sigma2 = g2->GetParameter(2);
-
-    g1->SetLineColor(kRed+1); g1->SetLineWidth(3);
-    g2->SetLineColor(kBlue+1); g2->SetLineWidth(3);
-    g1->Draw("SAME"); g2->Draw("SAME");
-
-    // extract params & manual chi2 over union of windows
-    R.mu1=g1->GetParameter(1); R.mu1_err=g1->GetParError(1);
-    R.s1 =g1->GetParameter(2); R.s1_err =g1->GetParError(2);
-    R.mu2=g2->GetParameter(1); R.mu2_err=g2->GetParError(1);
-    R.s2 =g2->GetParameter(2); R.s2_err =g2->GetParError(2);
-    R.A1 = g1->GetParameter(0); R.A1_err = g1->GetParError(0);
-    R.A2 = g2->GetParameter(0); R.A2_err = g2->GetParError(0);
-
-
-    auto inG1=[&](double x){ return x>=5.3 && x<=6.1; };
-    auto inG2=[&](double x){ return x>=6.0 && x<=6.8; };
-    R.chi2=0; R.ndf=0;
-    for (int ib=1; ib<=R.hEnergy_front->GetNbinsX(); ++ib){
+    // Chi2 over union of fit windows
+    auto inG1 = [&](double x){ return x >= g1_lo && x <= g1_hi; };
+    auto inG2 = [&](double x){ return x >= g2_left && x <= g2_right; };
+    R.chi2 = 0; R.ndf = 0;
+    for (int ib = 1; ib <= R.hEnergy_front->GetNbinsX(); ++ib) {
       const double x = R.hEnergy_front->GetXaxis()->GetBinCenter(ib);
       if (!(inG1(x) || inG2(x))) continue;
       const double y = R.hEnergy_front->GetBinContent(ib);
-      const double yfit = g1->Eval(x) + g2->Eval(x);
+      const double yfit = g1->Eval(x) + (g2 ? g2->Eval(x) : 0.0);
       const double var = y + 1e-6;
-      R.chi2 += (y-yfit)*(y-yfit)/var;
+      R.chi2 += (y - yfit) * (y - yfit) / var;
       ++R.ndf;
     }
     R.ndf = std::max(1, R.ndf - 6);
@@ -650,60 +713,66 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     auto outline=(TH1F*)R.hEnergy_back->Clone(Form("hE_outline_ext%d",extNum));
     outline->SetFillStyle(0); outline->SetLineColor(kBlack); outline->SetLineWidth(2); outline->Draw("BAR SAME");
 
-    // fit two per-peak windows
-    TF1* g3 = new TF1(Form("g3_ext%d",extNum),"gaus",4.5,6.3);  // broader range to 6.3
-    g3->SetParameters(R.hEnergy_back->GetMaximum(), 6.4, 0.10);
-    g3->SetParLimits(2,0.03,0.40);
-    R.hEnergy_back->Fit(g3,"RQ0S");
+    // Fit ranges (first peak Kα, second peak Kβ); clamp to histogram range
+    const double g3_lo = 5.3, g3_hi = 6.1;
+    TF1* g3 = new TF1(Form("g3_ext%d",extNum),"gaus", g3_lo, g3_hi);
+    TF1* g4 = nullptr;
+    double g4_left = 6.0, g4_right = 6.8;  // defaults for chi2 if no g4 fit
 
-    // Get the mean and 2*sigma from first fit
-    double mu3 = g3->GetParameter(1);
-    double sigma3 = g3->GetParameter(2);
-    double two_sig = sigma3 * 3;  
+    if (R.hEnergy_back->GetEntries() > 0) {
+      g3->SetParameters(R.hEnergy_back->GetMaximum(), 5.9, 0.10);  // 5.9 keV = Fe-55 Kα, inside [5.3,6.1]
+      g3->SetParLimits(2, 0.03, 0.40);
+      int fit3 = R.hEnergy_back->Fit(g3, "RQ0S");
+      double mu3 = g3->GetParameter(1);
+      double sigma3 = g3->GetParameter(2);
+      bool ok3 = (fit3 == 0 && sigma3 > 0.01 && sigma3 < 1.0 && mu3 >= ENE_MIN && mu3 <= ENE_MAX);
 
-    // Set second peak window based on first peak
-    double g4_left = mu3 + two_sig;
-    double g4_right = g4_left + 1;
+      if (ok3) {
+        double dist_second = sigma3 * 2;   // distance from first peak to start second window
+        double width_second = sigma3 * 3; // second peak window width
+        g4_left = std::max(ENE_MIN, mu3 + dist_second);
+        g4_right = std::min(ENE_MAX, g4_left + width_second);
+        if (g4_right <= g4_left) g4_right = std::min(ENE_MAX, g4_left + 0.5);
+        g4 = new TF1(Form("g4_ext%d",extNum), "gaus", g4_left, g4_right);
+        g4->SetParameters(R.hEnergy_back->GetMaximum() / 3.0, (g4_left + g4_right) / 2.0, 0.12);
+        g4->SetParLimits(2, 0.03, 0.40);
+        int fit4 = R.hEnergy_back->Fit(g4, "RQ0S");
+        double mu4_val = g4->GetParameter(1);
+        double sigma4_val = g4->GetParameter(2);
+        bool ok4 = (fit4 == 0 && sigma4_val > 0.01 && sigma4_val < 1.0);
+        if (!ok4 && g4) { delete g4; g4 = nullptr; }
+      }
+    }
 
-    TF1* g4 = new TF1(Form("g4_ext%d",extNum),"gaus",g4_left,g4_right);
-    g4->SetParameters(R.hEnergy_back->GetMaximum()/3.0, (g4_left+g4_right)/2.0, 0.12);  // center initial guess
-    g4->SetParLimits(2,0.03,0.40);
-    R.hEnergy_back->Fit(g4,"RQ0S");
+    if (g4) {
+      g3->SetLineColor(kRed+1); g3->SetLineWidth(3);
+      g4->SetLineColor(kBlue+1); g4->SetLineWidth(3);
+      g3->Draw("SAME"); g4->Draw("SAME");
+      R.mu3 = g3->GetParameter(1); R.mu3_err = g3->GetParError(1);
+      R.s3  = g3->GetParameter(2); R.s3_err  = g3->GetParError(2);
+      R.mu4 = g4->GetParameter(1); R.mu4_err = g4->GetParError(1);
+      R.s4  = g4->GetParameter(2); R.s4_err  = g4->GetParError(2);
+      R.A3  = g3->GetParameter(0); R.A3_err  = g3->GetParError(0);
+      R.A4  = g4->GetParameter(0); R.A4_err  = g4->GetParError(0);
+    } else {
+      if (R.hEnergy_back->GetEntries() == 0)
+        std::cerr << "Back energy histogram empty for ext " << extNum << ", using default params" << std::endl;
+      R.mu3 = 5.9; R.mu3_err = 0; R.s3 = 0.12; R.s3_err = 0;
+      R.mu4 = 6.4; R.mu4_err = 0; R.s4 = 0.12; R.s4_err = 0;
+      R.A3 = 0; R.A3_err = 0; R.A4 = 0; R.A4_err = 0;
+    }
 
-    double mu2 = g4->GetParameter(1);
-    double sigma2 = g4->GetParameter(2);
-
-    g3->SetLineColor(kRed+1); g3->SetLineWidth(3);
-    g4->SetLineColor(kBlue+1); g4->SetLineWidth(3);
-    g3->Draw("SAME"); g4->Draw("SAME");
-
-    // extract params & manual chi2 over union of windows
-    R.mu3=g3->GetParameter(1); R.mu3_err=g3->GetParError(1);
-    R.s3 =g3->GetParameter(2); R.s3_err =g3->GetParError(2);
-    R.mu4=g4->GetParameter(1); R.mu4_err=g4->GetParError(1);
-    R.s4 =g4->GetParameter(2); R.s4_err =g4->GetParError(2);
-    R.A3 = g3->GetParameter(0); R.A3_err = g3->GetParError(0);
-    R.A4 = g4->GetParameter(0); R.A4_err = g4->GetParError(0);
-
-    // double ymaxPanel = 1.2 * std::max({
-    //   R.hEnergy_back->GetMaximum(),
-    //   R.A3,
-    //   R.A4
-    // });
-    // R.hEnergy_back->SetMaximum(ymaxPanel);
-    // outline->SetMaximum(ymaxPanel);
-
-    // NEED TO LOOK AT THIS MORE
-    auto inG3=[&](double x){ return x>=5.3 && x<=6.1; };
-    auto inG4=[&](double x){ return x>=6.0 && x<=6.8; };
-    R.chi2_2=0; R.ndf_2=0;
-    for (int ib=1; ib<=R.hEnergy_back->GetNbinsX(); ++ib){
+    // Chi2 over actual fit ranges (g3: [g3_lo,g3_hi], g4: [g4_left,g4_right])
+    auto inG3 = [&](double x){ return x >= g3_lo && x <= g3_hi; };
+    auto inG4 = [&](double x){ return x >= g4_left && x <= g4_right; };
+    R.chi2_2 = 0; R.ndf_2 = 0;
+    for (int ib = 1; ib <= R.hEnergy_back->GetNbinsX(); ++ib) {
       const double x = R.hEnergy_back->GetXaxis()->GetBinCenter(ib);
       if (!(inG3(x) || inG4(x))) continue;
       const double y = R.hEnergy_back->GetBinContent(ib);
-      const double yfit = g3->Eval(x) + g4->Eval(x);
+      const double yfit = g3->Eval(x) + (g4 ? g4->Eval(x) : 0.0);
       const double var = y + 1e-6;
-      R.chi2_2 += (y-yfit)*(y-yfit)/var;
+      R.chi2_2 += (y - yfit) * (y - yfit) / var;
       ++R.ndf_2;
     }
     R.ndf_2 = std::max(1, R.ndf_2 - 6);
@@ -811,18 +880,19 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     leg_front->SetTextFont(42);
     leg_front->SetTextSize(0.030);
 
-    leg_front->AddEntry(R.hEnergy_front, "Front", "f");
+
+    leg_front->AddEntry(R.hEnergy_front, "#sigma_{xy}<1 (Front)", "f");
     leg_front->AddEntry(g1, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu1, R.mu1_err, R.s1, R.s1_err), "l");
     leg_front->AddEntry(g2, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu2, R.mu2_err, R.s2, R.s2_err), "l");
 
     // Right legend for "Back data"
     auto leg_back = new TLegend(0.64, 0.65, 0.88, 0.89);
-    leg_back->SetBorderSize(1);
+    leg_back->SetBorderSize(1); 
     leg_back->SetFillStyle(1001);
     leg_back->SetTextFont(42);
     leg_back->SetTextSize(0.030);
 
-    leg_back->AddEntry(R.hEnergy_back, "Back", "f");
+    leg_back->AddEntry(R.hEnergy_back, "#sigma_{xy}>1 (Back)", "f");
     leg_back->AddEntry(g3, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu3, R.mu3_err, R.s3, R.s3_err), "l");
     leg_back->AddEntry(g4, Form("#splitline{#mu = %.3f #pm %.3f keV}{#sigma = %.3f #pm %.3f keV}", R.mu4, R.mu4_err, R.s4, R.s4_err), "l");
 
@@ -844,21 +914,108 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     TCanvas* cPixE = new TCanvas(Form("cPixE_ext%d",extNum),"Pixel Energy Distribution",900,600);
     cPixE->cd(); gPad->SetGridx(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
 
-    R.hPixel_Energy->SetTitle(";Electron number [e-];Counts");
-    R.hPixel_Energy->GetXaxis()->SetRangeUser(min_e_number_display,max_e_number_display);
+    R.hPixelEnergy->SetTitle(";Electron number [e-];Counts");
+    R.hPixelEnergy->GetXaxis()->SetRangeUser(min_e_number_display,max_e_number_display);
+    // R.hPixelEnergy->GetYaxis()->SetRangeUser(-10.0, R.hPixelEnergy->GetMaximum() + R.hPixelEnergy->GetMaximum()*0.1);
 
-    // R.hPixel_Energy->SetBarWidth(0.95);
-    // R.hPixel_Energy->SetBarOffset(0.025);
-    R.hPixel_Energy->SetLineColor(kBlue); R.hPixel_Energy->SetFillColor(kBlue); R.hPixel_Energy->SetFillStyle(3001);
-    R.hPixel_Energy->Draw("BAR");
-    auto outline=(TH1F*)R.hPixel_Energy->Clone(Form("hPixE_outline_ext%d",extNum));
-    outline->SetFillStyle(0); outline->SetLineColor(kBlue); outline->SetLineWidth(1); outline->Draw("BAR SAME");
+    // R.hPixelEnergy->SetBarWidth(0.95);
+    // R.hPixelEnergy->SetBarOffset(0.025);
+    R.hPixelEnergy->SetLineColor(kBlue); 
+    R.hPixelEnergy->SetFillColor(kBlue); 
+    R.hPixelEnergy->SetFillStyle(3001);
+    R.hPixelEnergy->Draw("Hist");
+    // auto outline=(TH1F*)R.hPixelEnergy->Clone(Form("hPixE_outline_ext%d",extNum));
+    // outline->SetFillStyle(0); outline->SetLineColor(kBlue); outline->SetLineWidth(1); outline->Draw("BAR SAME");
 
     { TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.05);
       lab.DrawLatex(0.50,0.965,Form("Pixel Energy Distribution - %s - Ext %d", moduleUsed, extNum)); }
 
     SaveCanvas(cPixE, Form("%s/pixel_energy", extDir.Data()));
     delete cPixE;
+  }
+
+  // Cluster size distributions
+  {
+    TCanvas* cSize = new TCanvas(Form("cSize_ext%d",extNum),"Cluster Size Distribution",900,600);
+    cSize->cd(); gPad->SetGridx(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
+
+    R.hClusterSize->SetTitle(";Cluster Size [pixels];Counts");
+    // R.hClusterSize->GetXaxis()->SetRangeUser(0.0, max_cluster_size_display);
+    // R.hClusterSize->GetYaxis()->SetRangeUser(-10.0, R.hClusterSize->GetMaximum() + R.hClusterSize->GetMaximum()*0.1);
+
+    // R.hClusterSize->SetBarWidth(0.95);
+    // R.hClusterSize->SetBarOffset(0.025);
+    R.hClusterSize->SetLineColor(kGreen+2); 
+    R.hClusterSize->SetFillColor(kGreen+2); 
+    R.hClusterSize->SetFillStyle(3001);
+    R.hClusterSize->Draw("Hist");
+    // auto outline=(TH1F*)R.hClusterSize->Clone(Form("hCsize_outline_ext%d",extNum));
+    // outline->SetFillStyle(0); outline->SetLineColor(kGreen+2); outline->SetLineWidth(1); outline->Draw("BAR SAME");
+
+    { TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.05);
+      lab.DrawLatex(0.50,0.965,Form("Cluster Size Distribution - %s - Ext %d", moduleUsed, extNum)); }
+
+    SaveCanvas(cSize, Form("%s/cluster_size", extDir.Data()));
+    delete cSize;
+  }
+
+  // Max pixel energy distributions
+  {
+    TCanvas* cMaxPixE = new TCanvas(Form("cMaxPixE_ext%d",extNum),"Max Pixel Energy Distribution",900,600);
+    cMaxPixE->cd(); gPad->SetGridx(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
+
+    R.hMaxPixelEnergy->SetTitle(";Max Pixel Energy [keV];Counts");
+    // R.hMaxPixelEnergy->GetXaxis()->SetRangeUser(0.0, max_pixel_energy_display);
+    // R.hMaxPixelEnergy->GetYaxis()->SetRangeUser(-10.0, R.hMaxPixelEnergy->GetMaximum() + R.hMaxPixelEnergy->GetMaximum()*0.1);
+
+    // R.hMaxPixelEnergy->SetBarWidth(0.95);
+    // R.hMaxPixelEnergy->SetBarOffset(0.025);
+    R.hMaxPixelEnergy->SetLineColor(kBlue+2); 
+    R.hMaxPixelEnergy->SetFillColor(kBlue+2); 
+    R.hMaxPixelEnergy->SetFillStyle(3001);
+    R.hMaxPixelEnergy->Draw("Hist");
+    // auto outline=(TH1F*)R.hMaxPixelEnergy->Clone(Form("hMaxPixE_outline_ext%d",extNum));
+    // outline->SetFillStyle(0); outline->SetLineColor(kBlue); outline->SetLineWidth(1); outline->Draw("BAR SAME");
+
+    { TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.05);
+      lab.DrawLatex(0.50,0.965,Form("Max Pixel Energy Distribution - %s - Ext %d", moduleUsed, extNum)); }
+
+    SaveCanvas(cMaxPixE, Form("%s/max_pixel_energy", extDir.Data()));
+    delete cMaxPixE;
+  }
+
+  // Cluster energy vs cluster size
+  {
+    TCanvas* cESize = new TCanvas(Form("cESize_ext%d",extNum),"Cluster Energy vs Cluster Size",900,700);
+    cESize->cd(); gPad->SetLogz(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
+
+    R.henergy_clustersize->SetTitle("");
+    R.henergy_clustersize->GetXaxis()->SetTitle("Energy [keV]");
+    R.henergy_clustersize->GetYaxis()->SetTitle("Cluster Size [pixels]");
+    R.henergy_clustersize->Draw("COLZ");
+
+    { TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.05);
+      lab.DrawLatex(0.50,0.965,Form("Cluster Energy vs Cluster Size - %s - Ext %d", moduleUsed, extNum)); }
+
+    SaveCanvas(cESize, Form("%s/energy_vs_cluster_size", extDir.Data()));
+    delete cESize;
+  }
+
+  // Max pixel energy vs cluster size
+  {
+    TCanvas* cMaxPixESize = new TCanvas(Form("cMaxPixESize_ext%d",extNum),"Max Pixel Energy vs Cluster Size",900,700);
+    cMaxPixESize->cd(); gPad->SetLogz(); gPad->SetLeftMargin(0.12); gPad->SetBottomMargin(0.12);
+
+    R.hmaxpixelenergy_clustersize->SetTitle("");
+    R.hmaxpixelenergy_clustersize->GetXaxis()->SetTitle("Max Pixel Energy [keV]");
+    R.hmaxpixelenergy_clustersize->GetYaxis()->SetTitle("Cluster Size [pixels]");
+    R.hmaxpixelenergy_clustersize->Draw("COLZ");
+
+    { TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.05);
+      lab.DrawLatex(0.50,0.965,Form("Max Pixel Energy vs Cluster Size - %s - Ext %d", moduleUsed, extNum)); }
+
+    SaveCanvas(cMaxPixESize, Form("%s/max_pixel_energy_vs_cluster_size", extDir.Data()));
+    delete cMaxPixESize;
   }
 
   // ----------------- Extra plots per extension ------------------
@@ -912,6 +1069,25 @@ static ExtResults ProcessOneExtension(const std::vector<TString>& files,
     hPosY->Draw("hist"); SaveCanvas(c8, Form("%s/posY", extDir.Data())); delete c8;
   }
 
+  // Per-extension calibration summary (info tree: gain, single-e resolution, DC)
+  {
+    TCanvas* cCal = new TCanvas(Form("c_calibration_ext%d", extNum), "Calibration (info tree)", 500, 320);
+    cCal->SetGrid(0, 0);
+    TPaveText* pt = new TPaveText(0.08, 0.15, 0.92, 0.88, "NDC");
+    pt->SetTextAlign(12);
+    pt->SetTextSize(0.045);
+    pt->SetBorderSize(1);
+    pt->SetFillColor(kWhite);
+    pt->AddText(Form("Extension %d - %s (from info tree)", extNum, moduleUsed));
+    pt->AddText("");
+    pt->AddText(Form("Gain:        %g #pm %g  [e^{-}/ADU]", R.gainext, R.gainext_err));
+    pt->AddText(Form("Single-e #sigma:  %g #pm %g  [e^{-}]", R.sigext, R.sigext_err));
+    pt->AddText(Form("Dark current: %g #pm %g  [e^{-}/pix/s]", R.dcext, R.dcext_err));
+    pt->Draw();
+    SaveCanvas(cCal, Form("%s/calibration_info", extDir.Data()));
+    delete cCal;
+  }
+
   return R;
 }
 
@@ -946,6 +1122,7 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
   // Process each extension, collect results
   ExtResults R[5]; // 1..4
   for (int e=1;e<=4;++e){
+  // for (int e=1;e<=1;++e){
     if (byExt.count(e)==0 || byExt[e].empty()){
       std::cout << "[INFO] No files for ext" << e << "\n";
       continue;
@@ -973,13 +1150,21 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
   }
   if (zmaxF<=0) zmaxF=1.0;
 
-  // Energy y-range
+  // Cluster Energy y-range
   double ymaxEnergy=0.0;
   for (int e=1;e<=4;++e){
     if (!R[e].hEnergy) continue;
     ymaxEnergy = std::max(ymaxEnergy, R[e].hEnergy_front->GetMaximum());
   }
   if (ymaxEnergy<=0) ymaxEnergy=1.0;
+
+  // Pixel Energy y-range
+  double ymaxPixelEnergy=0.0;
+  for (int e=1;e<=4;++e){
+    if (!R[e].hEnergy) continue;
+    ymaxPixelEnergy = std::max(ymaxPixelEnergy, R[e].hPixelEnergy->GetMaximum());
+  }
+  if (ymaxPixelEnergy<=0) ymaxPixelEnergy=1.0;
 
   // ----------------- (1) Back-side comparison 2×2 -------------------
   {
@@ -1295,24 +1480,120 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
     gPad->SetGridx();
     int pad=1;
     for (int e=1; e<=4; ++e){
-      if (!R[e].hPixel_Energy) { ++pad; continue; }
+      if (!R[e].hPixelEnergy) { ++pad; continue; }
       c->cd(pad++);
       gPad->SetGridx();
 
-      R[e].hPixel_Energy->SetTitle("");
-      R[e].hPixel_Energy->GetXaxis()->SetTitle("Electron number [e-]");
-      R[e].hPixel_Energy->GetYaxis()->SetTitle("Counts");
-      R[e].hPixel_Energy->SetLineColor(kBlue); R[e].hPixel_Energy->SetFillColor(kBlue); R[e].hPixel_Energy->SetFillStyle(3001);
-      R[e].hPixel_Energy->GetXaxis()->SetRangeUser(min_e_number_display,max_e_number_display);
+      R[e].hPixelEnergy->SetTitle("");
+      R[e].hPixelEnergy->GetXaxis()->SetTitle("Electron number [e-]");
+      R[e].hPixelEnergy->GetYaxis()->SetTitle("Counts");
+      R[e].hPixelEnergy->SetLineColor(kBlue); 
+      // R[e].hPixelEnergy->SetFillColor(kBlue); R[e].hPixelEnergy->SetFillStyle(3001);
+      R[e].hPixelEnergy->GetXaxis()->SetRangeUser(min_e_number_display,max_e_number_display);
+      // R[e].hPixelEnergy->GetYaxis()->SetRangeUser(0.0,ymaxPixelEnergy+ (ymaxPixelEnergy*0.1));
 
 
-      R[e].hPixel_Energy->Draw("BAR");
-      auto outline=(TH1F*)R[e].hPixel_Energy->Clone(Form("hPixE_outline_ext%d",e));
-      outline->SetFillStyle(0); outline->SetLineColor(kBlue); outline->SetLineWidth(1); outline->Draw("BAR SAME");
+      R[e].hPixelEnergy->Draw("Hist");
+      // auto outline=(TH1F*)R[e].hPixelEnergy->Clone(Form("hPixE_outline_ext%d",e));
+      // outline->SetFillStyle(0); outline->SetLineColor(kBlue); outline->SetLineWidth(1); outline->Draw("BAR SAME");
       {TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.05);
       lab.DrawLatex(0.50,0.965,Form("Pixel Energy Distribution - %s - Ext %d", moduleUsed, e));}
     }
     SaveCanvas(c, Form("%s/compare/compare_pixelE_2x2", baseTag.Data()));
+    delete c;
+  }
+
+  // ------------------- (7) Calibration (info tree): Gain, single-e resolution, DC per extension ---
+  {
+    TCanvas* c = new TCanvas("compare_calibration", "Calibration per extension", 1400, 1000);
+    c->Divide(1, 3);
+    double x[4] = {1, 2, 3, 4};
+    double y[4], ex[4], ey[4];
+    for (int i = 0; i < 4; ++i) ex[i] = 0;
+
+    // Pad 1: Gain
+    c->cd(1);
+    gPad->SetGridx();
+    gPad->SetGridy();
+    gPad->SetLeftMargin(0.12);
+    gPad->SetBottomMargin(0.12);
+    int n = 0;
+    for (int e = 1; e <= 4; ++e) {
+      if (R[e].nFiles == 0) continue;
+      y[n] = R[e].gainext;
+      ey[n] = R[e].gainext_err;
+      x[n] = e;
+      n++;
+    }
+    if (n > 0) {
+      TGraphErrors* gr = new TGraphErrors(n, x, y, ex, ey);
+      gr->SetTitle(";Extension;Gain [e^{-}/ADU]");
+      gr->SetMarkerStyle(20);
+      gr->SetMarkerSize(1.2);
+      gr->SetMarkerColor(kBlue+1);
+      gr->Draw("AP");
+      gr->GetXaxis()->SetNdivisions(4);
+      gr->GetXaxis()->SetLimits(0.5, 4.5);
+      gr->GetXaxis()->SetTitle("Extension (1-4)");
+      { TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.04);
+        lab.DrawLatex(0.5, 0.92, Form("Gain (info tree) - %s", moduleUsed)); }
+    }
+
+    // Pad 2: Single-electron resolution (sigext)
+    c->cd(2);
+    gPad->SetGridx();
+    gPad->SetGridy();
+    gPad->SetLeftMargin(0.12);
+    gPad->SetBottomMargin(0.12);
+    n = 0;
+    for (int e = 1; e <= 4; ++e) {
+      if (R[e].nFiles == 0) continue;
+      y[n] = R[e].sigext;
+      ey[n] = R[e].sigext_err;
+      x[n] = e;
+      n++;
+    }
+    if (n > 0) {
+      TGraphErrors* gr = new TGraphErrors(n, x, y, ex, ey);
+      gr->SetTitle(";Extension;Single-e resolution #sigma [e^{-}]");
+      gr->SetMarkerStyle(20);
+      gr->SetMarkerSize(1.2);
+      gr->SetMarkerColor(kRed+1);
+      gr->Draw("AP");
+      gr->GetXaxis()->SetNdivisions(4);
+      gr->GetXaxis()->SetLimits(0.5, 4.5);
+      { TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.04);
+        lab.DrawLatex(0.5, 0.92, Form("Single-electron resolution (info tree) - %s", moduleUsed)); }
+    }
+
+    // Pad 3: DC (dcext)
+    c->cd(3);
+    gPad->SetGridx();
+    gPad->SetGridy();
+    gPad->SetLeftMargin(0.12);
+    gPad->SetBottomMargin(0.12);
+    n = 0;
+    for (int e = 1; e <= 4; ++e) {
+      if (R[e].nFiles == 0) continue;
+      y[n] = R[e].dcext;
+      ey[n] = R[e].dcext_err;
+      x[n] = e;
+      n++;
+    }
+    if (n > 0) {
+      TGraphErrors* gr = new TGraphErrors(n, x, y, ex, ey);
+      gr->SetTitle(";Extension;Dark current [e^{-}/pix/s]");
+      gr->SetMarkerStyle(20);
+      gr->SetMarkerSize(1.2);
+      gr->SetMarkerColor(kGreen+2);
+      gr->Draw("AP");
+      gr->GetXaxis()->SetNdivisions(4);
+      gr->GetXaxis()->SetLimits(0.5, 4.5);
+      { TLatex lab; lab.SetNDC(); lab.SetTextAlign(22); lab.SetTextSize(0.04);
+        lab.DrawLatex(0.5, 0.92, Form("Dark current (info tree) - %s", moduleUsed)); }
+    }
+
+    SaveCanvas(c, Form("%s/compare/compare_calibration", baseTag.Data()));
     delete c;
   }
 
@@ -1366,6 +1647,9 @@ void MakeComposite_Fe55_Clusters_Extensions(const char* filelist="test_list.txt"
     main_log << "----------------------------------------------------------------\n";
     main_log << "Extension: ext" << e << "\n";
     main_log << "Files combined: " << R[e].nFiles << "\n";
+    main_log << "Info tree (calibration): gain=" << R[e].gainext << " +/- " << R[e].gainext_err
+        << "  single-e sigma=" << R[e].sigext << " +/- " << R[e].sigext_err
+        << "  DC=" << R[e].dcext << " +/- " << R[e].dcext_err << "\n";
     main_log << "Total clusters: " << R[e].totalClusters << "\n";
     main_log << "Accepted (energy window): " << R[e].nAcceptedEnergy << "\n";
     main_log << "Accepted (front-side):    " << R[e].nAcceptedFront  << "\n";

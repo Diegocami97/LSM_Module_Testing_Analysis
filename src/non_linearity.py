@@ -118,7 +118,7 @@ def main(infile, inadu, root, gain, ne, de, display, cols, rows, erange, ext, ou
 
     # --- Fit individual Gaussian peaks window-by-window ---
     gauss = []
-    centers, e_centers = [], []   # in ADU
+    centers, e_centers = [], []   # in ADU/e
     sigma, e_sigma = [], []       # in electrons
     x_num_electron = []
 
@@ -205,105 +205,238 @@ def main(infile, inadu, root, gain, ne, de, display, cols, rows, erange, ext, ou
     pol1.Draw("SAME")
     c_cent.Update()
 
-    # ---------- Extend calibration to Fe-55 and annotate predicted ADU ----------
-    e_per_electron = 3.74  # eV / e-
-    E_targets_eV = {"K#alpha": 5895.0, "K#beta": 6490.0}
-    ne_targets = {name: (E / e_per_electron) for name, E in E_targets_eV.items()}
-    mu_pred_ADU = {name: pol1.Eval(ne) for name, ne in ne_targets.items()}
+    # # # ---------- Extend calibration to Fe-55 and annotate predicted ADU ----------
+    # # e_per_electron = 3.74  # eV / e-
+    # # E_targets_eV = {"K#alpha": 5895.0, "K#beta": 6490.0}
+    # # ne_targets = {name: (E / e_per_electron) for name, E in E_targets_eV.items()}
+    # # mu_pred_ADU = {name: pol1.Eval(ne) for name, ne in ne_targets.items()}
 
-    xmax_needed = 1.05 * max(ne_targets.values())
-    hframe = g_cent.GetHistogram()
-    if hframe:
-        hframe.GetXaxis().SetRangeUser(ne_ini, max(xmax_needed, hframe.GetXaxis().GetXmax()))
-        ymax_needed = 1.10 * max(hframe.GetMaximum(), max(mu_pred_ADU.values()))
-        hframe.SetMaximum(ymax_needed)
+    # # xmax_needed = 1.05 * max(ne_targets.values())
+    # # hframe = g_cent.GetHistogram()
+    # # if hframe:
+    # #     hframe.GetXaxis().SetRangeUser(ne_ini, max(xmax_needed, hframe.GetXaxis().GetXmax()))
+    # #     ymax_needed = 1.10 * max(hframe.GetMaximum(), max(mu_pred_ADU.values()))
+    # #     hframe.SetMaximum(ymax_needed)
 
-    # Draw the fitted line out to xmax_needed
-    pol1.SetRange(ne_ini, xmax_needed)
-    pol1.Draw("SAME")
+    # # # Draw the fitted line out to xmax_needed
+    # # pol1.SetRange(ne_ini, xmax_needed)
+    # # pol1.Draw("SAME")
 
-    col_map = {"K#alpha": ROOT.kBlue + 1, "K#beta": ROOT.kGreen + 2}
-    for name, ne_val in ne_targets.items():
-        mu_val = mu_pred_ADU[name]
-        col = col_map.get(name, ROOT.kBlue + 1)
+    # # col_map = {"K#alpha": ROOT.kBlue + 1, "K#beta": ROOT.kGreen + 2}
+    # # for name, ne_val in ne_targets.items():
+    # #     mu_val = mu_pred_ADU[name]
+    # #     col = col_map.get(name, ROOT.kBlue + 1)
 
-        v = ROOT.TLine(ne_val, 0, ne_val, mu_val);  v.SetLineStyle(7); v.SetLineColor(col); v.Draw()
-        h = ROOT.TLine(ne_ini, mu_val, ne_val, mu_val); h.SetLineStyle(7); h.SetLineColor(col); h.Draw()
-        m = ROOT.TMarker(ne_val, mu_val, 20); m.SetMarkerColor(col); m.SetMarkerSize(1.0); m.Draw()
+    # #     v = ROOT.TLine(ne_val, 0, ne_val, mu_val);  v.SetLineStyle(7); v.SetLineColor(col); v.Draw()
+    # #     h = ROOT.TLine(ne_ini, mu_val, ne_val, mu_val); h.SetLineStyle(7); h.SetLineColor(col); h.Draw()
+    # #     m = ROOT.TMarker(ne_val, mu_val, 20); m.SetMarkerColor(col); m.SetMarkerSize(1.0); m.Draw()
 
-        txt = ROOT.TLatex()
-        txt.SetTextSize(0.030)
-        txt.DrawLatex(ne_val * 0.70, mu_val * 1.02,
-                      f"{name}: n_{{e}}={ne_val:.1f},  #mu={mu_val:.1f} ADU")
+    # #     txt = ROOT.TLatex()
+    # #     txt.SetTextSize(0.030)
+    # #     txt.DrawLatex(ne_val * 0.70, mu_val * 1.02,
+    # #                   f"{name}: n_{{e}}={ne_val:.1f},  #mu={mu_val:.1f} ADU")
 
-    c_cent.Modified(); c_cent.Update()
+    # # c_cent.Modified(); c_cent.Update()
 
-    # ---------- Fe-55 guides, labels, and axis extension (robust for TGraph) ----------
-    e_per_electron = 3.74  # eV / e-
-    E_targets_eV = {"K#alpha": 5895.0, "K#beta": 6490.0}
+    # # # ---------- Fe-55 guides, labels, and axis extension (robust for TGraph) ----------
+    # # e_per_electron = 3.74  # eV / e-
+    # # E_targets_eV = {"K#alpha": 5895.0, "K#beta": 6490.0}
 
-    # n_e for each target and predicted ADU from the linear fit
-    ne_targets  = {name: (E / e_per_electron) for name, E in E_targets_eV.items()}
-    mu_pred_ADU = {name: pol1.Eval(ne)        for name, ne in ne_targets.items()}
+    # # # n_e for each target and predicted ADU from the linear fit
+    # # ne_targets  = {name: (E / e_per_electron) for name, E in E_targets_eV.items()}
+    # # mu_pred_ADU = {name: pol1.Eval(ne)        for name, ne in ne_targets.items()}
 
-    # Determine needed axis limits
-    xmax_needed = 1.05 * max(ne_targets.values())
-    # Keep current ymin; expand ymax to include predicted points
-    # (If you prefer to keep the lower part tight, just don't set SetMinimum.)
-    current_ymin = g_cent.GetMinimum()
-    current_ymax = g_cent.GetMaximum()
-    ymax_needed  = 1.10 * max(current_ymax, max(mu_pred_ADU.values()))
+    # # # Determine needed axis limits
+    # # xmax_needed = 1.05 * max(ne_targets.values())
+    # # # Keep current ymin; expand ymax to include predicted points
+    # # # (If you prefer to keep the lower part tight, just don't set SetMinimum.)
+    # # current_ymin = g_cent.GetMinimum()
+    # # current_ymax = g_cent.GetMaximum()
+    # # ymax_needed  = 1.10 * max(current_ymax, max(mu_pred_ADU.values()))
 
-    # >>> IMPORTANT: use TGraph axis setters, not the frame's SetRangeUser <<<
-    g_cent.GetXaxis().SetLimits(ne_ini, xmax_needed)  # extend X
-    g_cent.SetMaximum(ymax_needed)                    # extend Y up
-    # g_cent.SetMinimum(current_ymin)                # (optional) keep same bottom
-    c_cent.Modified(); c_cent.Update()
+    # # # >>> IMPORTANT: use TGraph axis setters, not the frame's SetRangeUser <<<
+    # # g_cent.GetXaxis().SetLimits(ne_ini, xmax_needed)  # extend X
+    # # g_cent.SetMaximum(ymax_needed)                    # extend Y up
+    # # # g_cent.SetMinimum(current_ymin)                # (optional) keep same bottom
+    # # c_cent.Modified(); c_cent.Update()
 
-    # Draw solid fit over the measured range [ne_ini, ne_max]
-    pol1.SetRange(ne_ini, ne_max)
-    pol1.SetLineStyle(1)   # solid
-    pol1.Draw("SAME")
+    # # # Draw solid fit over the measured range [ne_ini, ne_max]
+    # # pol1.SetRange(ne_ini, ne_max)
+    # # pol1.SetLineStyle(1)   # solid
+    # # pol1.Draw("SAME")
 
-    # Draw dashed fit for the extrapolated segment (ne_max -> xmax_needed)
-    pol1_ex = ROOT.TF1("fitfunc_cent_ex", "pol1", ne_max, xmax_needed)
-    pol1_ex.SetParameters(pol1.GetParameter(0), pol1.GetParameter(1))
-    pol1_ex.SetLineColor(pol1.GetLineColor())
-    pol1_ex.SetLineStyle(2)  # dashed
-    pol1_ex.Draw("SAME")
+    # # # Draw dashed fit for the extrapolated segment (ne_max -> xmax_needed)
+    # # pol1_ex = ROOT.TF1("fitfunc_cent_ex", "pol1", ne_max, xmax_needed)
+    # # pol1_ex.SetParameters(pol1.GetParameter(0), pol1.GetParameter(1))
+    # # pol1_ex.SetLineColor(pol1.GetLineColor())
+    # # pol1_ex.SetLineStyle(2)  # dashed
+    # # pol1_ex.Draw("SAME")
 
-    # Guides, markers, labels
-    col_map = {"K#alpha": ROOT.kBlue + 1, "K#beta": ROOT.kGreen + 2}
-    for name, ne_val in ne_targets.items():
-        mu_val = mu_pred_ADU[name]
-        col = col_map.get(name, ROOT.kBlue + 1)
+    # # # Guides, markers, labels
+    # # col_map = {"K#alpha": ROOT.kBlue + 1, "K#beta": ROOT.kGreen + 2}
+    # # for name, ne_val in ne_targets.items():
+    # #     mu_val = mu_pred_ADU[name]
+    # #     col = col_map.get(name, ROOT.kBlue + 1)
 
-        v = ROOT.TLine(ne_val, current_ymin if current_ymin is not None else 0.0, ne_val, mu_val)
-        v.SetLineStyle(7); v.SetLineColor(col); v.Draw()
+    # #     v = ROOT.TLine(ne_val, current_ymin if current_ymin is not None else 0.0, ne_val, mu_val)
+    # #     v.SetLineStyle(7); v.SetLineColor(col); v.Draw()
 
-        h = ROOT.TLine(ne_ini, mu_val, ne_val, mu_val)
-        h.SetLineStyle(7); h.SetLineColor(col); h.Draw()
+    # #     h = ROOT.TLine(ne_ini, mu_val, ne_val, mu_val)
+    # #     h.SetLineStyle(7); h.SetLineColor(col); h.Draw()
 
-        m = ROOT.TMarker(ne_val, mu_val, 20)
-        m.SetMarkerColor(col); m.SetMarkerSize(1.0); m.Draw()
+    # #     m = ROOT.TMarker(ne_val, mu_val, 20)
+    # #     m.SetMarkerColor(col); m.SetMarkerSize(1.0); m.Draw()
 
-        txt = ROOT.TLatex()
-        txt.SetTextSize(0.030)
-        txt.SetTextColor(col)
-        txt.DrawLatex(ne_val * 0.70, mu_val * 1.02,
-                      f"{name}: n_{{e}}={ne_val:.1f},  #mu={mu_val:.1f} ADU/e-")
+    # #     txt = ROOT.TLatex()
+    # #     txt.SetTextSize(0.030)
+    # #     txt.SetTextColor(col)
+    # #     txt.DrawLatex(ne_val * 0.70, mu_val * 1.02,
+    # #                   f"{name}: n_{{e}}={ne_val:.1f},  #mu={mu_val:.1f} ADU/e-")
 
-    c_cent.Modified(); c_cent.Update()
+    # # c_cent.Modified(); c_cent.Update()
 
 
 
-    # Extract linear fit parameters and print with correct unit conversions
-    a = pol1.GetParameter(0)   # ADU
-    b = pol1.GetParameter(1)   # ADU/e-
-    print(f"[poly1] Calibration: offset a = {a:.3f} ADU, gain b = {b:.6f} ADU/e-")
-    adu_per_keV = b * (1000.0 / e_per_electron)    # ADU/keV
-    eV_per_ADU  = e_per_electron / b               # eV/ADU
-    print(f"[poly1] => {adu_per_keV:.3f} ADU/keV, {eV_per_ADU:.3f} eV/ADU")
+    # # # Extract linear fit parameters and print with correct unit conversions
+    # # a = pol1.GetParameter(0)   # ADU
+    # # b = pol1.GetParameter(1)   # ADU/e-
+    # # print(f"[poly1] Calibration: offset a = {a:.3f} ADU, gain b = {b:.6f} ADU/e-")
+    # # adu_per_keV = b * (1000.0 / e_per_electron)    # ADU/keV
+    # # eV_per_ADU  = e_per_electron / b               # eV/ADU
+    # # print(f"[poly1] => {adu_per_keV:.3f} ADU/keV, {eV_per_ADU:.3f} eV/ADU")
+
+    # # Move stats box if present
+    # try:
+    #     stat = c_cent.GetPrimitive("stats")
+    #     if stat:
+    #         stat.SetX1NDC(0.18); stat.SetY1NDC(0.60)
+    #         stat.SetX2NDC(0.50); stat.SetY2NDC(0.80)
+    #         c_cent.Modified(); c_cent.Update()
+    # except Exception:
+    #     pass
+
+    # if display:
+    #     c_cent.Update()
+    # else:
+    #     out_png = os.path.join(output, f"{base_tag}_calibration_ne.pdf")
+    #     c_cent.SaveAs(out_png)
+    #     print(f"[SAVE] {out_png}")
+
+    # # --- Fit individual Gaussian peaks window-by-window (robust) ---
+    # gauss = []
+    # centers, e_centers = [], []   # ADU
+    # sigma, e_sigma = [], []       # electrons
+    # x_num_electron = []
+
+    # fit_opts = "QNR"  # quiet, no draw; enforce fit Range
+
+    # def fit_one_peak(i, hist, erange):
+    #     """Return (ok, fgi) where ok=False if the fit is not reliable."""
+    #     x_min = i - erange[0]
+    #     x_max = i + erange[1]
+
+    #     # Seed from local maximum in the window
+    #     ax   = hist.GetXaxis()
+    #     bmin = max(1, ax.FindBin(x_min))
+    #     bmax = min(hist.GetNbinsX(), ax.FindBin(x_max))
+    #     maxbin, maxval = bmin, 0.0
+    #     for b in range(bmin, bmax + 1):
+    #         v = hist.GetBinContent(b)
+    #         if v > maxval:
+    #             maxval, maxbin = v, b
+    #     mu_seed  = ax.GetBinCenter(maxbin)
+    #     amp_seed = maxval
+    #     sig_seed = 0.15  # electrons (tune if needed)
+
+    #     # If there are basically no counts, bail early
+    #     if amp_seed < 5:
+    #         return False, None
+
+    #     fgi = ROOT.TF1(f"ne_{i}", "gaus", x_min, x_max)
+    #     fgi.SetParameters(amp_seed, mu_seed, sig_seed)
+    #     fgi.SetParLimits(1, x_min, x_max)   # mean constrained to the window
+    #     fgi.SetParLimits(2, 0.02, 0.60)     # sigma (e-)
+    #     fgi.SetLineColor(ROOT.kRed + 1)
+
+    #     hist.Fit(fgi, fit_opts)
+
+    #     # Sanity checks: mean near intended i, reasonable errors & width
+    #     mu_fit  = fgi.GetParameter(1)
+    #     emu_fit = fgi.GetParError(1)
+    #     amp_fit = fgi.GetParameter(0)
+    #     sig_fit = fgi.GetParameter(2)
+
+    #     ok = (
+    #         amp_fit > 0 and
+    #         0.015 <= sig_fit <= 0.8 and
+    #         abs(mu_fit - i) <= 0.45 and
+    #         emu_fit <= 0.30
+    #     )
+    #     return ok, fgi
+
+    # for i in range(ne_ini, ne_max + 1):
+    #     ok, fgi = fit_one_peak(i, hist_e, erange)
+    #     if not ok:
+    #         # stop at first failure to avoid cascading garbage (or 'continue' if you prefer)
+    #         break
+    #     centers.append(gain * fgi.GetParameter(1))     # ADU
+    #     e_centers.append(gain * fgi.GetParError(1))    # ADU
+    #     sigma.append(fgi.GetParameter(2))              # e-
+    #     e_sigma.append(fgi.GetParError(2))             # e-
+    #     x_num_electron.append(i)
+    #     gauss.append(fgi)
+
+    # # Canvas: spectrum with fitted Gaussians
+    # c_spec = ROOT.TCanvas("c_spec", "Spectrum with Gaussian fits", 900, 700)
+    # hist_e.Draw("HIST")
+    # for fgi in gauss:
+    #     fgi.Draw("SAME")
+    # c_spec.SetLogy()
+    # if display:
+    #     c_spec.Update()
+    # else:
+    #     out_png = os.path.join(output, f"{base_tag}_FittedGauss.pdf")
+    #     c_spec.SaveAs(out_png)
+    #     print(f"[SAVE] {out_png}")
+
+    # # --- Calibration: peak centers vs electron number (ADU vs e-) ---
+    # c_cent = ROOT.TCanvas("c_cent", "Centers vs n_e", 900, 700)
+    # ROOT.gStyle.SetOptFit(1111)
+
+    # x  = x_num_electron
+    # y  = centers           # ADU
+    # ey = e_centers         # ADU
+    # ex = [0.0] * len(x)
+
+    # g_cent = ROOT.TGraphErrors(
+    #     len(y),
+    #     array('d', [float(xx) for xx in x]),
+    #     array('d', [float(yy) for yy in y]),
+    #     array('d', ex),
+    #     array('d', [float(e) for e in ey]),
+    # )
+    # g_cent.SetMarkerStyle(21)
+    # g_cent.SetMarkerSize(0.8)
+    # g_cent.Draw("AP E1")
+    # c_cent.Update()
+
+    # hframe = g_cent.GetHistogram()
+    # if hframe:
+    #     hframe.GetXaxis().SetTitle("n_{e^{-}}")
+    #     hframe.GetYaxis().SetTitle("#mu_{n_{e^{-}}} [ADU]")  # FIX unit label
+
+    # # Fit over the actually-found range, with generous slope freedom
+    # if len(x) >= 2:
+    #     xmin_fit, xmax_fit = min(x), max(x)
+    #     pol1 = ROOT.TF1("fitfunc_cent", "pol1", xmin_fit, xmax_fit)
+    #     pol1.SetLineColor(ROOT.kRed + 1)
+    #     pol1.SetLineStyle(9)
+    #     pol1.SetParameters(0.0, max(1.0, float(gain)))     # seed intercept=0, slope≈gain
+    #     # either remove limits or set them wide:
+    #     # pol1.SetParLimits(1, 0, 100*max(1.0, float(gain)))
+    #     g_cent.Fit(pol1, "EMR0")
+    #     pol1.Draw("SAME")
+    # c_cent.Update()
 
     # Move stats box if present
     try:
