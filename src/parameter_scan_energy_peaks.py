@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Combines ROOT cluster trees by grid point/extension, computes front/back
+# double-Gaussian Fe-55 energy peaks, and outputs CSV + comparison plots.
 """
 Parameter scan energy peaks: read ROOT cluster trees, combine files by grid point
 and extension, compute front/back double-Gaussian energy peaks (like MakeComposite_Fe55_Clusters_Extensions.cc)

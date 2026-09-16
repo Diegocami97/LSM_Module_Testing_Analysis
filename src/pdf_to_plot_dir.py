@@ -1,3 +1,7 @@
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Combines up to 4 PDF plots into a single 2x2 PNG collage.
+#
 # usecase: wildcard pattern search, take the first 4 matches
 # python plot_pdfs.py --files "trace_*.pdf" outputname
 #

@@ -1,3 +1,5 @@
+// Diego Venegas-Vargas
+// DAMIC-M Collaboration
 // ParameterScanEnergyPeaks.C
 // Reads a file list where each line is a ROOT file named ..._<image_id>_ext<ext>.root.
 // Files with the same grid point (same prefix before _<id>_ext<ext>.root) and same ext

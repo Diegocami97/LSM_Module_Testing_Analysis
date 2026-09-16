@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Builds one FITS image per skip from an L1 CSV via CDS (ramp_1 - ramp_0).
 """Build one FITS image per skip from an L1 CSV: each image is 480×1280, pixel = ramp_1 - ramp_0 (CDS).
 
 Reads the CSV in chunks. For each skip, fills pedestal (ramp=0) and signal (ramp=1)

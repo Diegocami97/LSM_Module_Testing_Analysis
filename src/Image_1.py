@@ -1,3 +1,8 @@
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Pedestal-subtracts a 4-extension CCD image and plots all four channels in a
+# 2x2 grid with a shared color scale.
+
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits

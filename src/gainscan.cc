@@ -1,3 +1,8 @@
+// Diego Venegas-Vargas
+// DAMIC-M Collaboration
+// Scans a campaign directory for per-extension gain FITS keys and makes
+// per-module and cross-module gain plots.
+//
 // gainscan.C  — run as a ROOT macro (interpreted or ACLiC-compiled).
 //
 // Usage examples:

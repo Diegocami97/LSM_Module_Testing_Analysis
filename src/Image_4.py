@@ -1,3 +1,8 @@
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Builds a composite median CCD image from multiple FZ files per channel,
+# estimates per-pixel event rate, and plots the result.
+
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
@@ -11,12 +16,62 @@ import glob
 from matplotlib.lines import Line2D
 
 # Configuration constants
-overscan_start = 6152
-y_overscan_start = 1536
+overscan_start = 6152 # 300
+y_overscan_start = 1536 # 78
 prescan = 8
 running_window = 40
 col_threshold = 6
 cti_window = 100
+
+def compute_event_rate_per_pix_per_image(image, noise_adu, n_images,
+                                         prescan=prescan, overscan_start=overscan_start,
+                                         roi_center_frac=0.5, threshold_sigma=5.0):
+    """
+    Estimate an event rate from the composite median image as:
+      (# pixels above threshold) / (N_pix_in_ROI * N_images)
+
+    - Uses active area columns [prescan:overscan_start]
+    - Uses a central ROI in the active area with linear size = roi_center_frac of the full active extent
+      (roi_center_frac=0.5 => central 50% in x and y).
+    - Threshold is (threshold_sigma * noise_adu) in ADU, counting only positive excursions.
+    """
+    if image is None or not np.isfinite(noise_adu) or noise_adu <= 0 or n_images <= 0:
+        return np.nan, 0, 0, np.nan
+
+    h, w = image.shape
+    x0_act = int(max(0, prescan))
+    x1_act = int(min(w, overscan_start))
+    if x1_act <= x0_act:
+        return np.nan, 0, 0, np.nan
+
+    # active area height is full image
+    y0_act, y1_act = 0, h
+
+    # central ROI within active area
+    frac = float(roi_center_frac)
+    frac = min(max(frac, 0.05), 1.0)
+    roi_w = int(round((x1_act - x0_act) * frac))
+    roi_h = int(round((y1_act - y0_act) * frac))
+    roi_w = max(1, roi_w)
+    roi_h = max(1, roi_h)
+
+    cx = (x0_act + x1_act) // 2
+    cy = (y0_act + y1_act) // 2
+    x0 = max(x0_act, cx - roi_w // 2)
+    x1 = min(x1_act, x0 + roi_w)
+    y0 = max(y0_act, cy - roi_h // 2)
+    y1 = min(y1_act, y0 + roi_h)
+
+    roi = image[y0:y1, x0:x1]
+    roi = roi[np.isfinite(roi)]
+    n_pix = int(roi.size)
+    if n_pix == 0:
+        return np.nan, 0, 0, np.nan
+
+    thr_adu = float(threshold_sigma) * float(noise_adu)
+    n_events = int(np.sum(roi > thr_adu))
+    rate = n_events / (n_pix * n_images)
+    return float(rate), n_events, n_pix, float(thr_adu)
 
 def robust_noise_from_overscan(sub, overscan_start, clip_sigma=5.0, max_iter=2):
     """
@@ -281,13 +336,18 @@ def compute_colpanel_yrange(median_images, prescan, overscan_start,
 
 
 
-def save_image_detailed(images, ccd_image_name, log_file,vmin, vmax, colpanel_ylim, output_dir = '.'):
+def save_image_detailed(images, ccd_image_name, log_file, vmin, vmax, colpanel_ylim,
+                        output_dir='.', panel_vranges=None):
     fig, axs = plt.subplots(2, 2, figsize=(18, 12))
     axs = axs.flatten()
 
     for i, (image, channel, noise) in enumerate(images):
         ax = axs[i]
-        im = ax.imshow(image, cmap='cividis', origin='lower', vmin=vmin, vmax=vmax, aspect='auto')
+        if panel_vranges is not None:
+            pvmin, pvmax = panel_vranges[i]
+        else:
+            pvmin, pvmax = vmin, vmax
+        im = ax.imshow(image, cmap='cividis', origin='lower', vmin=pvmin, vmax=pvmax, aspect='auto')
         ax.set_title(f'{ccd_image_name} – Channel {channel - 1}', fontsize=14, fontweight="bold")
         ax.set_xlabel("Column Number", fontsize=12)
         ax.set_ylabel("Row Number", fontsize=12)
@@ -375,6 +435,18 @@ def main():
     )
     parser.add_argument("--output_dir", required=True, help="Path for output directory.")
     parser.add_argument("--module", required=True, help="Module name (used for outputs: <module>.png and <module>.log)")
+    parser.add_argument("--event-threshold-sigma", type=float, default=5.0,
+                        help="Threshold in units of noise (ADU) for counting event pixels in the composite median image. Default 5.")
+    parser.add_argument("--event-roi-center-frac", type=float, default=0.5,
+                        help="Central ROI linear fraction of the active area used to count event pixels. 0.5 means central 50%% in x and y. Default 0.5.")
+    parser.add_argument("--minutes-per-image", type=float, default=12.0,
+                        help="Acquisition time per image in minutes, used to convert rates to events/pix/day. Default 12.")
+    parser.add_argument("--binning-x", type=int, default=1,
+                        help="Hardware/software binning factor in X (columns). For 20x20 binning use 20. Default 1.")
+    parser.add_argument("--binning-y", type=int, default=1,
+                        help="Hardware/software binning factor in Y (rows). For 20x20 binning use 20. Default 1.")
+    parser.add_argument("--independent-colorbars", action="store_true",
+                        help="Use independent colorbar ranges for each panel (default: shared range).")
     args = parser.parse_args()
 
     # Gather files from patterns or explicit paths
@@ -400,11 +472,19 @@ def main():
     ccd_image_name = args.module
 
     output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     median_images, median_noises = compute_median_images(fz_files)
     images = [(median_images[i], i + 1, median_noises[i]) for i in range(4)]
     # NEW: dynamic display range over the 4 composites
     vmin, vmax = compute_display_vrange(median_images, prescan, overscan_start,
                                         pct_low=0.5, pct_high=99.5)
+    panel_vranges = None
+    if args.independent_colorbars:
+        panel_vranges = []
+        for ch in range(4):
+            ch_vmin, ch_vmax = compute_display_vrange([median_images[ch]], prescan, overscan_start,
+                                                      pct_low=0.5, pct_high=99.5)
+            panel_vranges.append((ch_vmin, ch_vmax))
     
     # NEW: common y-limits for the bottom 'Column Median' panels
     ymin_cm, ymax_cm = compute_colpanel_yrange(median_images, prescan, overscan_start,
@@ -413,7 +493,41 @@ def main():
 
     log_file_path = Path(output_dir / f"{ccd_image_name}.log")
     with log_file_path.open('w') as log_file:
-        save_image_detailed(images, ccd_image_name, log_file, vmin, vmax, (ymin_cm, ymax_cm), output_dir=output_dir)
+        # Event rate estimate in active area central ROI
+        n_images = len(fz_files)
+        minutes_per_image = float(args.minutes_per_image)
+        images_per_day = (1440.0 / minutes_per_image) if minutes_per_image > 0 else np.nan
+        bx = max(int(args.binning_x), 1)
+        by = max(int(args.binning_y), 1)
+        bin_area = float(bx * by)
+        log_file.write("=" * 72 + "\n")
+        log_file.write("Event rate estimate (composite median image)\n")
+        log_file.write(f"Definition: N(pixels > {args.event_threshold_sigma:.2f}*noise) / (N_pix_ROI * N_images)\n")
+        log_file.write(f"ROI: central {args.event_roi_center_frac:.2f} of active area; active cols [{prescan}:{overscan_start})\n")
+        log_file.write(f"N_images: {n_images}\n")
+        log_file.write(f"Minutes per image: {minutes_per_image:.2f}  => images/day: {images_per_day:.2f}\n")
+        log_file.write(f"Binning: {bx}x{by}  => bin area: {bin_area:.0f} native pix / binned pix\n")
+        for ch in range(4):
+            rate, n_evt, n_pix, thr_adu = compute_event_rate_per_pix_per_image(
+                median_images[ch],
+                noise_adu=float(median_noises[ch]),
+                n_images=n_images,
+                prescan=prescan,
+                overscan_start=overscan_start,
+                roi_center_frac=args.event_roi_center_frac,
+                threshold_sigma=args.event_threshold_sigma,
+            )
+            # 'rate' is per *binned* pixel per image (since it's computed on the binned image array)
+            rate_bin_per_day = rate * images_per_day if np.isfinite(images_per_day) else np.nan
+            # Convert to native pixel rate per day by dividing by the bin area
+            rate_pix_per_day = (rate_bin_per_day / bin_area) if (np.isfinite(rate_bin_per_day) and bin_area > 0) else np.nan
+            log_file.write(
+                f"Channel {ch}: threshold={thr_adu:.3f} ADU; N_evt={n_evt}; N_pix={n_pix}; "
+                f"rate={rate:.6e} events/bin/image; {rate_bin_per_day:.6e} events/bin/day; {rate_pix_per_day:.6e} events/pix/day\n"
+            )
+        log_file.write("=" * 72 + "\n\n")
+        save_image_detailed(images, ccd_image_name, log_file, vmin, vmax, (ymin_cm, ymax_cm),
+                            output_dir=output_dir, panel_vranges=panel_vranges)
 
    
 

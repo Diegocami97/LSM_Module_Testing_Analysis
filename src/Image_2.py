@@ -1,3 +1,8 @@
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Pedestal-subtracts a 4-channel CCD image, detects column defects/traps,
+# estimates CTI (X/Y), and plots per-channel views with a summary log.
+
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits

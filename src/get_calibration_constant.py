@@ -1,4 +1,9 @@
 #!/home/damicm/repos/waders/pysimdamicm/venv_waders_ACM/bin/python
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Fits Gaussian calibration peaks to reconstructed-cluster/FITS data to
+# estimate gain (electrons per ADU).
+
 import click
 import sys
 

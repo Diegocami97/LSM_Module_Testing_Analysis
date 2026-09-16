@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Fits Gaussian peaks to CCD charge spectra from FITS images or ROOT clusters.
 """
 Fit Gaussian peaks to CCD charge spectra (from FITS images or ROOT clusters).
 
@@ -9,8 +12,19 @@ Usage examples:
 
   # From ROOT tree (expects TTree "clustersRec" with pixels_E in keV)
   python fit_peaks.py -r clusters.root -k 3.74 --ne 0 50 --de 0.05 -o out
+
+  # Per-extension / per-file gains (e.g. each ROOT file has a different gain)
+  python fit_peaks.py -r ext4.root --gain-map gains.json -k 3.74 --ne 0 50 -o out
+  # gains.json: {"ext4.root": 3.72, "ext5.root": 3.75}  (keys: basename or no extension)
+
+  # Combine multiple ROOT files; gain from each file's "info" tree (ext{N}_gainext); -k optional
+  python fit_peaks.py -r 'ext4_*.root' --root-ext 4 --ne 0 50 -o out
+
+  # Multiple ROOT files (options first, then files; works when shell expands a glob)
+  python fit_peaks.py --root-ext 3 --ne 200 210 -o out path/to/DM02/*ext3.root
 """
 
+import json
 import os
 import sys
 import click
@@ -22,12 +36,213 @@ if ("-h" not in sys.argv) and ("--help" not in sys.argv):
     import numpy as np
     from glob import glob
     from astropy.io import fits
+    # SciPy is optional; only needed for the global multi-peak fit mode
+    try:
+        from scipy.optimize import curve_fit  # type: ignore
+    except Exception:
+        curve_fit = None
 else:
     import ROOT  # type: ignore
     from array import array  # type: ignore
     import numpy as np  # type: ignore
     from glob import glob  # type: ignore
     from astropy.io import fits  # type: ignore
+    try:
+        from scipy.optimize import curve_fit  # type: ignore
+    except Exception:
+        curve_fit = None
+
+
+def global_multi_peak_fit(hist_e, ne_ini, ne_max):
+    """
+    Global multi-Gaussian fit to extract peak centroids in electrons.
+
+    Model:
+      y(q) = sum_k A_k * exp(-(q - (i_k + d_k))^2 / (2*sigma^2)) + b0
+
+    where:
+      i_k runs from ne_ini..ne_max (integer peak number),
+      d_k is a small offset for each peak,
+      sigma is shared, b0 is a constant background.
+
+    Returns:
+      x_num_electron, centers_e, e_centers_e, sigma_list, e_sigma_list
+    """
+    if curve_fit is None:
+        raise RuntimeError(
+            "Global multi-peak fit requested but SciPy is not available. "
+            "Install scipy or avoid using --fit-mode global."
+        )
+
+    nbins = hist_e.GetNbinsX()
+    bin_centers = np.array([hist_e.GetBinCenter(i) for i in range(1, nbins + 1)], dtype=float)
+    counts = np.array([hist_e.GetBinContent(i) for i in range(1, nbins + 1)], dtype=float)
+
+    # Restrict to a slightly expanded region around [ne_ini, ne_max]
+    mask = (bin_centers >= (ne_ini - 2.0)) & (bin_centers <= (ne_max + 2.0))
+    x = bin_centers[mask]
+    y = counts[mask]
+
+    if x.size == 0 or np.all(y <= 0):
+        raise RuntimeError("Histogram is empty in requested fit range; cannot perform global fit.")
+
+    n_peaks = ne_max - ne_ini + 1
+
+    def multi_gauss(xvals, *params):
+        n_loc = (len(params) - 2) // 2
+        sigma = params[-2]
+        b0 = params[-1]
+        y_model = np.zeros_like(xvals, dtype=float)
+        for k in range(n_loc):
+            A = params[2 * k]
+            d = params[2 * k + 1]
+            i_peak = ne_ini + k
+            mu = i_peak + d
+            y_model += A * np.exp(-0.5 * ((xvals - mu) / sigma) ** 2)
+        y_model += b0
+        return y_model
+
+    # Initial guesses and bounds
+    A0 = max((y.max() - np.median(y)) / max(n_peaks, 1), 1.0)
+    sigma0 = 0.3
+    b0 = max(np.median(y), 0.0)
+
+    p0 = []
+    lo = []
+    hi = []
+    for _ in range(n_peaks):
+        p0.extend([A0, 0.0])     # A_k, d_k
+        lo.extend([0.0, -0.5])   # amplitudes >=0, offsets in [-0.5, 0.5]
+        hi.extend([np.inf, 0.5])
+    p0.append(sigma0)
+    lo.append(0.05)
+    hi.append(2.0)
+    p0.append(b0)
+    lo.append(0.0)
+    hi.append(np.inf)
+
+    popt, pcov = curve_fit(
+        lambda xx, *pp: multi_gauss(xx, *pp),
+        x,
+        y,
+        p0=p0,
+        bounds=(lo, hi),
+        maxfev=40000,
+    )
+
+    centers_e = []
+    e_centers_e = []
+    # one shared sigma; propagate its uncertainty equally to all
+    sigma_val = popt[-2]
+    sigma_err = float(np.sqrt(pcov[-2, -2])) if pcov.size else float("nan")
+
+    for k in range(n_peaks):
+        d_idx = 2 * k + 1
+        d_hat = popt[d_idx]
+        i_peak = ne_ini + k
+        mu_hat = i_peak + d_hat
+        centers_e.append(mu_hat)
+        err = float(np.sqrt(pcov[d_idx, d_idx])) if pcov.size else float("nan")
+        e_centers_e.append(err)
+
+    x_num_electron = list(range(ne_ini, ne_max + 1))
+    sigma_list = [sigma_val] * len(x_num_electron)
+    e_sigma_list = [sigma_err] * len(x_num_electron)
+
+    return x_num_electron, centers_e, e_centers_e, sigma_list, e_sigma_list
+
+
+def read_gain_from_info_tree(filepath, ext_num, in_adu_per_e=True):
+    """
+    Read gain from ROOT file's TTree "info", branch ext{N}_gainext.
+    The branch is stored in ADU/e- (same as -k). Returns that value, or None if not found.
+    """
+    f = ROOT.TFile.Open(filepath)
+    if not f or f.IsZombie():
+        return None
+    tinfo = f.Get("info")
+    if not tinfo or tinfo.GetEntries() == 0:
+        f.Close()
+        return None
+    branch_name = f"ext{ext_num}_gainext"
+    if not tinfo.FindBranch(branch_name):
+        f.Close()
+        return None
+    gainext = np.array([0.0], dtype=np.float64)
+    tinfo.SetBranchAddress(branch_name, gainext)
+    tinfo.GetEntry(0)
+    val = float(gainext[0])
+    f.Close()
+    if val <= 0:
+        return None
+    return val if in_adu_per_e else (1.0 / val)
+
+
+E_PER_ELECTRON = 3.74  # eV per electron (keV -> e-: energy_keV * 1000 / E_PER_ELECTRON)
+
+# Fe-55 X-ray line energies [keV] -> electron equivalent for residual extrapolation
+FE55_KA_KEV = 5.898
+FE55_KB_KEV = 6.490
+
+
+def keV_to_electrons(kev):
+    """Convert energy in keV to electrons using E_PER_ELECTRON."""
+    return kev * 1000.0 / E_PER_ELECTRON
+
+
+def fill_hist_from_clusters_tree(tree, hist_e):
+    """
+    Fill hist_e (in electrons) from TTree 'clustersRec'.
+    Branch pixels_E is vector<vector<float>>: per-cluster list of pixel energies in keV.
+    Converts each pixel energy to electrons (keV * 1000 / 3.74) and fills the histogram.
+    """
+    n_ent = tree.GetEntries()
+    for i in range(n_ent):
+        tree.GetEntry(i)
+        try:
+            pe = tree.pixels_E
+        except AttributeError:
+            pe = None
+        if pe is None:
+            continue
+        for cluster in pe:
+            try:
+                for e_kev in cluster:
+                    hist_e.Fill(float(e_kev) * 1000.0 / E_PER_ELECTRON)
+            except TypeError:
+                hist_e.Fill(float(cluster) * 1000.0 / E_PER_ELECTRON)
+    return hist_e
+
+
+def build_energy_sigma_xy(tree, nbins_e=50, e_min=4.5, e_max=7.0, nbins_s=50, s_min=0.0, s_max=2.0):
+    """
+    Build a TH2F of cluster Energy (keV) vs sigma_xy (pixels) from a 'clustersRec' tree.
+    Expects branches: Energy (cluster keV), rmsx, rmsy (pixels).
+    """
+    h2 = ROOT.TH2F("hE_sigma_xy", "Cluster Energy vs #sigma_{xy}",
+                   nbins_e, e_min, e_max,
+                   nbins_s, s_min, s_max)
+    n_ent = tree.GetEntries()
+    for i in range(n_ent):
+        tree.GetEntry(i)
+        if not (hasattr(tree, "Energy") and hasattr(tree, "rmsx") and hasattr(tree, "rmsy")):
+            continue
+        try:
+            energies = tree.Energy
+            sx_list = tree.rmsx
+            sy_list = tree.rmsy
+        except AttributeError:
+            continue
+        nC = len(energies)
+        for n in range(nC):
+            E_kev = float(energies[n])
+            sx = float(sx_list[n])
+            sy = float(sy_list[n])
+            sxy = (0.5 * (sx * sx + sy * sy)) ** 0.5
+            if e_min <= E_kev <= e_max:
+                h2.Fill(E_kev, sxy)
+    h2.SetDirectory(0)
+    return h2
 
 
 def get_histe(infile, hist_e, inADU, gain, cols=(8, -1), rows=(0, -1), ext=0):
@@ -47,10 +262,12 @@ def get_histe(infile, hist_e, inADU, gain, cols=(8, -1), rows=(0, -1), ext=0):
               help="Input FITS pattern (e.g., '/path/*.fits') with calibrated data.")
 @click.option("--inadu", type=bool, default=False,
               help="If input data are in ADU (FITS path). Converts ADU->e- using --gain.")
-@click.option("-r", "--root", type=str,
-              help="Input ROOT file with reconstructed clusters (TTree 'clustersRec').")
-@click.option("-k", "--gain", type=float, required=True,
-              help="Gain (ADU per e-). Used for calibration and plotting.")
+@click.option("-r", "--root", type=str, multiple=True,
+              help="ROOT file(s): repeat -r for each file, or pass one quoted glob (e.g. -r 'path/*.root'). Quote the glob so the shell does not expand it.")
+@click.option("--root-ext", type=int, default=0,
+              help="Extension number for reading gain from 'info' tree (branch ext{N}_gainext). Default 0.")
+@click.option("-k", "--gain", type=float, default=None,
+              help="Gain (ADU per e-). Optional when ROOT 'info' tree has ext{N}_gainext or --gain-map has the file. Required for FITS unless --gain-map matches.")
 @click.option("--ne", type=(int, int), default=(0, 1350),
               help="Minimum and maximum number of electrons to be fitted (inclusive).")
 @click.option("--de", type=float, default=0.05,
@@ -63,14 +280,73 @@ def get_histe(infile, hist_e, inADU, gain, cols=(8, -1), rows=(0, -1), ext=0):
               help="Row range [start, end) for --infile.")
 @click.option("--erange", type=(float, float), default=(0.35, 0.5),
               help="Half-window around each peak center for fit: [left, right] => mu±(left,right).")
+@click.option("--fixed-window", is_flag=True, default=False,
+              help="Center fit window at integer peak number i (no chain drift). Use for stable residuals and extrapolation to high e-.")
+@click.option("--fit-mode", type=click.Choice(["chained", "fixed", "global"]), default="chained",
+              help="Peak fitting mode: 'chained' (original running mean), 'fixed' (integer-centered windows), or 'global' (global multi-Gaussian fit in Python).")
 @click.option("--ext", type=int, default=1, help="FITS extension for data.")
 @click.option("-o", "--output", type=str, default='.', help="Output directory.")
-def main(infile, inadu, root, gain, ne, de, display, cols, rows, erange, ext, output):
+@click.option("--residual-fit-max", type=float, default=500.0,
+              help="Max reconstructed charge (e-) to use for parabola fit in residual plot.")
+@click.option("--residual-reliable-max", type=float, default=800.0,
+              help="Reconstructed charge (e-) above which data are annotated as unreliable.")
+@click.option("--extrapolate-max", type=float, default=0.0,
+              help="Extend residual plot x-axis and parabola to this reconstructed charge (e-). E.g. 2000 to extrapolate to 2000 e-.")
+@click.option("--residual-xrange", type=(float, float), default=(0.0, 0.0),
+              help="Optional x-axis range [xmin, xmax] (e-) for the non-linearity residual plot.")
+@click.option("--residual-yrange", type=(float, float), default=(0.0, 0.0),
+              help="Optional y-axis range [ymin, ymax] (e-) for the non-linearity residual plot.")
+@click.option("--residual-fit-model", type=click.Choice(["pol2", "scaledpol2", "pol3", "scaledpol3", "rational"]), default="pol2",
+              help="Model used to fit residuals vs reconstructed charge. 'scaled*' uses t=x/1000 for numerical stability; 'rational' is (a+b t+c t^2)/(1+d t).")
+@click.option("--no-residual-fit", is_flag=True, default=False,
+              help="Do not draw the parabola fit on the residual plot (data points only).")
+@click.option("--charge-xrange", type=(float, float), default=(0.0, 0.0),
+              help="Optional x-axis range [xmin, xmax] in electrons for the charge distribution plot.")
+@click.option("--charge-plot-title", type=str, default=None,
+              help="Optional title for charge distribution plot (e.g. 'MASK Selected Rows - Channel 3').")
+@click.option("--gain-map", type=click.Path(exists=True), default=None,
+              help="JSON file mapping filename -> gain (ADU/e-) for per-file gains. Keys: basename (e.g. 'file.root') or no extension (e.g. 'file'). -k used if key missing.")
+@click.argument("root_files", nargs=-1, type=click.Path(exists=False))
+def main(infile, inadu, root, root_ext, gain, ne, de, display, cols, rows, erange, fixed_window, fit_mode, ext, output,
+         residual_fit_max, residual_reliable_max, extrapolate_max, residual_xrange, residual_yrange, residual_fit_model, no_residual_fit,
+         charge_xrange, charge_plot_title, gain_map, root_files):
+    # Resolve ROOT input: -r (tuple when multiple=True) and/or positional root_files (e.g. shell-expanded glob)
+    root_spec = None
+    if root:
+        if len(root) == 1 and "*" in root[0]:
+            root_spec = root[0]
+        else:
+            root_spec = list(root)
+    if root_files:
+        if len(root_files) == 1 and "*" in root_files[0] and root_spec is None:
+            root_spec = root_files[0]
+        else:
+            extra = list(root_files)
+            if root_spec is not None and isinstance(root_spec, list):
+                root_spec = root_spec + extra
+            elif root_spec is None:
+                root_spec = extra
     # Basic checks
-    if (infile is None) and (root is None):
-        raise click.UsageError("Provide either --infile (FITS) or --root (ROOT).")
-    if (infile is not None) and (root is not None):
-        raise click.UsageError("Provide only one of --infile or --root, not both.")
+    if (infile is None) and (root_spec is None):
+        raise click.UsageError("Provide either --infile (FITS) or ROOT files (e.g. -r 'path/*.root' or list files after options).")
+    if (infile is not None) and (root_spec is not None):
+        raise click.UsageError("Provide only one of --infile or ROOT files, not both.")
+
+    # Resolve gain: use --gain-map if provided and key found, else -k
+    gain_map_dict = {}
+    if gain_map:
+        with open(gain_map) as f:
+            gain_map_dict = json.load(f)
+
+    def _effective_gain(input_path, base_tag_from_glob=None):
+        """Resolve gain from map (by basename or basename no ext) or fallback to -k. Returns (gain, from_map). gain may be None if -k not set and not in map."""
+        if gain_map_dict:
+            base = os.path.basename(input_path) if input_path else (base_tag_from_glob or "")
+            base_no_ext = os.path.splitext(base)[0] if base else ""
+            for key in (base, base_no_ext):
+                if key in gain_map_dict:
+                    return float(gain_map_dict[key]), True
+        return (float(gain) if gain is not None else None), False
 
     os.makedirs(output, exist_ok=True)
 
@@ -82,73 +358,169 @@ def main(infile, inadu, root, gain, ne, de, display, cols, rows, erange, ext, ou
     # Build histogram (either from ROOT TTree draw or manual fill from FITS)
     hist_name = "hist_e"
     hist_e = None
+    energy_sigma_tree = None
     base_tag = "spectra"
 
     if infile is None:
-        # From ROOT clusters: pixels_E in keV -> electrons via (keV*1000)/3.74
-        f = ROOT.TFile.Open(root)
-        if not f or f.IsZombie():
-            raise RuntimeError(f"Failed to open ROOT file: {root}")
-
-        clusters = f.Get("clustersRec")
-        if clusters is None:
-            raise RuntimeError("Could not find TTree 'clustersRec' in ROOT file.")
+        # Resolve ROOT file list from root_spec (string = glob, list = explicit files)
+        if isinstance(root_spec, str):
+            root_paths = sorted(glob(root_spec))
+        else:
+            root_paths = root_spec
+        if not root_paths:
+            raise RuntimeError(f"No ROOT files found for: {root_spec}")
 
         nbins = int((ne_max - ne_ini) / de)
-        draw_expr = f"pixels_E*1000/3.74>>{hist_name}({nbins},{ne_ini},{ne_max})"
-        _ = clusters.Draw(draw_expr, "", "GOFF norm")
-        hist_e = ROOT.gDirectory.Get(hist_name)
-        base_tag = os.path.splitext(os.path.basename(root))[0]
+        hist_e = ROOT.TH1D(hist_name, hist_name, nbins, ne_ini - 3, ne_max + 3)
+        hist_e.Sumw2()
+
+        if len(root_paths) == 1:
+            f = ROOT.TFile.Open(root_paths[0])
+            if not f or f.IsZombie():
+                raise RuntimeError(f"Failed to open ROOT file: {root_paths[0]}")
+            clusters = f.Get("clustersRec")
+            if clusters is None:
+                raise RuntimeError("Could not find TTree 'clustersRec' in ROOT file.")
+            fill_hist_from_clusters_tree(clusters, hist_e)
+            hist_e.SetDirectory(0)
+            energy_sigma_tree = clusters
+            base_tag = os.path.splitext(os.path.basename(root_paths[0]))[0]
+            input_for_gain = root_paths[0]
+        else:
+            # Combine multiple ROOT files with TChain
+            chain = ROOT.TChain("clustersRec")
+            for rp in root_paths:
+                chain.Add(rp)
+            if chain.GetEntries() == 0:
+                raise RuntimeError("TChain has no entries.")
+            fill_hist_from_clusters_tree(chain, hist_e)
+            hist_e.SetDirectory(0)
+            energy_sigma_tree = chain
+            base_tag = "combined"
+            input_for_gain = root_paths[0]
     else:
         # From FITS images: convert to electrons if --inadu
         nbins = int((ne_max - ne_ini) / de)
         hist_e = ROOT.TH1D(hist_name, hist_name, nbins, ne_ini - 3, ne_max + 3)
         hist_e.Sumw2()
-        get_histe(infile, hist_e, inadu, gain, cols=cols, rows=rows, ext=ext)
         globbed = glob(infile)
+        input_for_gain = globbed[0] if globbed else None
+        gain, _ = _effective_gain(input_for_gain or "")
+        if gain is None or gain <= 0:
+            raise click.UsageError(
+                "FITS input requires gain. Provide -k (e.g. -k 3.74) or --gain-map with an entry for this file."
+            )
+        get_histe(infile, hist_e, inadu, gain, cols=cols, rows=rows, ext=ext)
         base_tag = os.path.splitext(os.path.basename(globbed[0]))[0] if globbed else "fits_input"
+
+    # Resolve gain for ROOT: info tree (per file or mean over files) > gain-map > -k
+    if infile is None:
+        # root_paths already set above when infile is None
+        gains_adu = []
+        for rp in root_paths:
+            g = read_gain_from_info_tree(rp, root_ext, in_adu_per_e=True)
+            if g is not None:
+                gains_adu.append(g)
+        if gains_adu:
+            gain = float(np.mean(gains_adu))
+            if len(gains_adu) > 1:
+                print(f"[gain] Using mean gain from info tree: {gain:.6f} ADU/e- (over {len(gains_adu)} files)")
+            else:
+                print(f"[gain] Using gain from info tree: {gain:.6f} ADU/e- for {os.path.basename(root_paths[0])}")
+        else:
+            gain, gain_from_map = _effective_gain(input_for_gain)
+            if gain_from_map and input_for_gain:
+                print(f"[gain] Using gain {gain} for {os.path.basename(input_for_gain)} (from --gain-map)")
+    else:
+        gain, gain_from_map = _effective_gain(input_for_gain)
+        if gain_from_map and input_for_gain:
+            print(f"[gain] Using gain {gain} for {os.path.basename(input_for_gain)} (from --gain-map)")
+
+    if gain is None or gain <= 0:
+        raise click.UsageError(
+            "No gain available. For ROOT: ensure files have TTree 'info' with branch ext{N}_gainext (use --root-ext N), "
+            "or provide -k or --gain-map. For FITS: provide -k or --gain-map."
+        )
 
     if not hist_e:
         raise RuntimeError("Failed to create/fill histogram.")
+
+    # Global ROOT style: remove stats/fit boxes from all plots
+    ROOT.gStyle.SetOptStat(0)
+    ROOT.gStyle.SetOptFit(0)
 
     # Style
     hist_e.GetXaxis().SetTitle("n_{e^{-}}")
     hist_e.GetYaxis().SetTitle("Counts")
     hist_e.SetDirectory(0)
+    hist_e.SetStats(0)
 
-    # --- Fit individual Gaussian peaks window-by-window ---
+    # --- Fit individual Gaussian peaks ---
     gauss = []
-    centers, e_centers = [], []   # in ADU/e
-    sigma, e_sigma = [], []       # in electrons
+    centers_e, e_centers_e = [], []   # centroid and error in electrons (fit is on spectrum in e-)
+    sigma, e_sigma = [], []          # in electrons
     x_num_electron = []
 
-    mu_running = ne_ini - 1
-    fit_opts = "LEMRQ0"
+    # Legacy / ROOT-based methods: chained and fixed-window
+    if fit_mode in ("chained", "fixed"):
+        mu_running = ne_ini - 1
+        fit_opts = "LEMRQ0"
+        use_fixed = (fit_mode == "fixed") or fixed_window
 
-    for i in range(ne_ini, ne_max + 1):
-        x_min = (mu_running + 1) - erange[0]
-        x_max = (mu_running + 1) + erange[1]
+        for i in range(ne_ini, ne_max + 1):
+            if use_fixed:
+                center = float(i)
+            else:
+                center = mu_running + 1
+            x_min = center - erange[0]
+            x_max = center + erange[1]
 
-        fgi = ROOT.TF1(f"ne_{i}", "gaus", x_min, x_max)
-        fgi.SetParLimits(1, x_min, x_max)   # mean
-        fgi.SetParLimits(2, 0.01, 1.0)      # sigma in electrons
-        fgi.SetLineColor(ROOT.kRed + 1)
+            fgi = ROOT.TF1(f"ne_{i}", "gaus", x_min, x_max)
+            fgi.SetParLimits(1, x_min, x_max)   # mean
+            fgi.SetParLimits(2, 0.01, 1.0)      # sigma in electrons
+            fgi.SetLineColor(ROOT.kRed + 1)
 
-        hist_e.Fit(fgi, fit_opts)
-        # Retry once if the fit latched onto a wrong region
-        if (fgi.GetParameter(1) - mu_running) > 2:
-            fgi.SetParLimits(1, x_min, x_max)
             hist_e.Fit(fgi, fit_opts)
+            # Retry once if the fit latched onto a wrong region
+            if use_fixed:
+                if abs(fgi.GetParameter(1) - i) > 2:
+                    fgi.SetParLimits(1, x_min, x_max)
+                    hist_e.Fit(fgi, fit_opts)
+            else:
+                if (fgi.GetParameter(1) - mu_running) > 2:
+                    fgi.SetParLimits(1, x_min, x_max)
+                    hist_e.Fit(fgi, fit_opts)
 
-        mu_running = fgi.GetParameter(1)
+            mu_running = fgi.GetParameter(1)
 
-        # Store: centers in ADU, sigma in electrons
-        centers.append(gain * fgi.GetParameter(1))
-        e_centers.append(gain * fgi.GetParError(1))
-        sigma.append(fgi.GetParameter(2))
-        e_sigma.append(fgi.GetParError(2))
-        x_num_electron.append(i)
-        gauss.append(fgi)
+            # Store: centroid and error in electrons; sigma in electrons
+            centers_e.append(fgi.GetParameter(1))
+            e_centers_e.append(fgi.GetParError(1))
+            sigma.append(fgi.GetParameter(2))
+            e_sigma.append(fgi.GetParError(2))
+            x_num_electron.append(i)
+            gauss.append(fgi)
+    elif fit_mode == "global":
+        # Global multi-Gaussian fit in Python (SciPy) on the electron spectrum
+        x_num_electron, centers_e, e_centers_e, sigma, e_sigma = global_multi_peak_fit(
+            hist_e, ne_ini, ne_max
+        )
+    else:
+        raise RuntimeError(f"Unknown fit mode: {fit_mode}")
+
+    # ADU only where needed (calibration, normalized, delta mu)
+    centers = [c * gain for c in centers_e]
+    e_centers = [e * gain for e in e_centers_e]
+
+    # Print centroid vs peak number (line value) for comparison
+    print("")
+    print("  n_e (line)   centroid (e-)   ± err       residual (e-)")
+    print("  " + "-" * 55)
+    for i, (n_e, ce) in enumerate(zip(x_num_electron, centers_e)):
+        res = ce - n_e
+        ee = e_centers_e[i] if i < len(e_centers_e) else 0.0
+        print(f"  {n_e:4d}         {ce:12.6f}   ± {ee:.6f}   {res:12.6f}")
+    print("")
 
     # Canvas: spectrum with fitted Gaussians
     c_spec = ROOT.TCanvas("c_spec", "Spectrum with Gaussian fits", 900, 700)
@@ -163,9 +535,85 @@ def main(infile, inadu, root, gain, ne, de, display, cols, rows, erange, ext, ou
         c_spec.SaveAs(out_png)
         print(f"[SAVE] {out_png}")
 
+    # --- Charge distribution with peak-number markers (non-linearity visualization) ---
+    c_charge = ROOT.TCanvas("c_charge", "Charge distribution with peak numbers", 900, 700)
+    c_charge.SetLogy(1)
+    hist_charge = hist_e.Clone("hist_charge")
+    hist_charge.SetTitle("Pixel Charge distribution" + (" - " + charge_plot_title if charge_plot_title else ""))
+    hist_charge.GetXaxis().SetTitle("Reconstructed pixel charge [e^{-}]")
+    hist_charge.GetYaxis().SetTitle("counts")
+    hist_charge.SetLineWidth(2)
+    hist_charge.SetLineColor(ROOT.kBlue)
+    hist_charge.SetFillColorAlpha(ROOT.kBlue, 0.35)
+    hist_charge.SetFillStyle(1000)
+    hist_charge.SetStats(0)
+    # Optional user-specified x-axis range for the charge distribution plot
+    if charge_xrange and len(charge_xrange) == 2:
+        x_min, x_max = charge_xrange
+        if x_max > x_min:
+            hist_charge.GetXaxis().SetRangeUser(x_min, x_max)
+    hist_charge.Draw("HIST")
+    ymax = hist_charge.GetMaximum()
+    ymin = hist_charge.GetMinimum()
+    if ymin <= 0:
+        ymin = hist_charge.GetBinContent(hist_charge.GetMaximumBin()) * 1e-5
+    # Use histogram data range for line length: min positive bin content to max
+    ymin_data = ymax
+    for b in range(1, hist_charge.GetNbinsX() + 1):
+        c = hist_charge.GetBinContent(b)
+        if c > 0:
+            ymin_data = min(ymin_data, c)
+    if ymin_data >= ymax:
+        ymin_data = ymin
+    ymin_data = max(ymin_data, 1e-10)
+    peak_lines = []
+    peak_labels = []
+    # Draw dashed lines at the reconstructed centroids (in e-) and label them with the peak number n_e
+    # This matches the reference style where x-axis is reconstructed charge but line labels are integer peak numbers.
+    for n_e, mu_e in zip(x_num_electron, centers_e):
+        line = ROOT.TLine(mu_e, ymin_data, mu_e, ymax)
+        line.SetLineColor(ROOT.kRed)
+        line.SetLineStyle(7)
+        line.SetLineWidth(1)
+        line.Draw("SAME")
+        peak_lines.append(line)
+        txt = ROOT.TLatex()
+        txt.SetTextSize(0.024)
+        txt.SetTextColor(ROOT.kRed)
+        txt.DrawLatex(mu_e + 0.15, ymax * 0.92, str(n_e))
+        peak_labels.append(txt)
+    c_charge.Modified()
+    c_charge.Update()
+    if display:
+        c_charge.Update()
+    else:
+        out_charge = os.path.join(output, f"{base_tag}_charge_distribution_peak_numbers.pdf")
+        c_charge.SaveAs(out_charge)
+        print(f"[SAVE] {out_charge}")
+
+    # --- Cluster Energy vs sigma_xy (for ROOT inputs only, when branches exist) ---
+    if infile is None and energy_sigma_tree is not None:
+        try:
+            hE_sig = build_energy_sigma_xy(energy_sigma_tree)
+        except Exception:
+            hE_sig = None
+        if hE_sig:
+            c_es = ROOT.TCanvas("c_es", "Energy vs sigma_xy", 900, 700)
+            hE_sig.SetTitle("Cluster Energy vs #sigma_{xy}")
+            hE_sig.GetXaxis().SetTitle("Energy [keV]")
+            hE_sig.GetYaxis().SetTitle("#sigma_{xy} [pix]")
+            hE_sig.Draw("COLZ")
+            c_es.Modified()
+            c_es.Update()
+            if display:
+                c_es.Update()
+            else:
+                out_es = os.path.join(output, f"{base_tag}_energy_vs_sigma_xy.pdf")
+                c_es.SaveAs(out_es)
+                print(f"[SAVE] {out_es}")
+
     # --- Calibration: peak centers vs electron number (ADU vs e-) ---
     c_cent = ROOT.TCanvas("c_cent", "Centers vs n_e", 900, 700)
-    ROOT.gStyle.SetOptFit(1111)
 
     x = x_num_electron
     y = centers           # ADU
@@ -455,7 +903,103 @@ def main(infile, inadu, root, gain, ne, de, display, cols, rows, erange, ext, ou
         c_cent.SaveAs(out_png)
         print(f"[SAVE] {out_png}")
 
+    # --- Non-linearity residual: (Reconstructed charge - Peak n.) vs Reconstructed charge (e-) ---
+    reco_e = centers_e[:]
+    resid_e = [reco_e[i] - x[i] for i in range(len(x))]
+    e_resid = e_centers_e[:]
+    c_res = ROOT.TCanvas("c_res", "Non-linearity residual", 900, 700)
+    g_res = ROOT.TGraphErrors(
+        len(x),
+        array('d', [float(r) for r in reco_e]),
+        array('d', [float(v) for v in resid_e]),
+        array('d', [0.0] * len(x)),
+        array('d', [float(e) for e in e_resid]),
+    )
+    g_res.SetMarkerStyle(21)
+    g_res.SetMarkerSize(0.8)
+    g_res.Draw("AP E1")
+    hres = g_res.GetHistogram()
+    if hres:
+        hres.GetXaxis().SetTitle("Reconstructed pixel charge (e^{-})")
+        hres.GetYaxis().SetTitle("(Reconstructed charge - Peak n.) (e^{-})")
+        hres.SetTitle("Non-linearity: residual vs reconstructed charge")
+    # Parabola fit up to residual_fit_max; optionally extend plot and curve to extrapolate_max (skip if --no-residual-fit)
+    x_fit_max = min(residual_fit_max, max(reco_e)) if reco_e else residual_fit_max
+    # Always make room on the x-axis to see the extrapolated line up to ~2000 e-
+    x_plot_max = max(max(reco_e) if reco_e else 0, 2000.0)
+    if extrapolate_max > 0:
+        x_plot_max = max(x_plot_max, extrapolate_max)
+    def _make_residual_fit_tf1(name, model, xmin, xmax):
+        # Use t=x/1000 for stability where requested
+        if model == "pol2":
+            f = ROOT.TF1(name, "pol2", xmin, xmax)
+        elif model == "pol3":
+            f = ROOT.TF1(name, "pol3", xmin, xmax)
+        elif model == "scaledpol2":
+            f = ROOT.TF1(name, "[0] + [1]*(x/1000.0) + [2]*(x/1000.0)*(x/1000.0)", xmin, xmax)
+            f.SetParNames("a", "b", "c")
+        elif model == "scaledpol3":
+            f = ROOT.TF1(name, "[0] + [1]*(x/1000.0) + [2]*(x/1000.0)*(x/1000.0) + [3]*(x/1000.0)*(x/1000.0)*(x/1000.0)", xmin, xmax)
+            f.SetParNames("a", "b", "c", "d")
+        elif model == "rational":
+            # (a + b t + c t^2) / (1 + d t), with t=x/1000
+            f = ROOT.TF1(name, "([0] + [1]*(x/1000.0) + [2]*(x/1000.0)*(x/1000.0)) / (1.0 + [3]*(x/1000.0))", xmin, xmax)
+            f.SetParNames("a", "b", "c", "d")
+            # mild defaults to help the minimizer
+            f.SetParameters(0.0, 0.0, 0.0, 0.0)
+        else:
+            raise RuntimeError(f"Unknown residual fit model: {model}")
+        return f
 
+    f_parab = None
+    if not no_residual_fit and x_fit_max > (min(reco_e) if reco_e else 0):
+        x_fit_min = min(reco_e) if reco_e else 0
+        f_parab = _make_residual_fit_tf1("f_res_fit", residual_fit_model, x_fit_min, x_plot_max)
+        f_parab.SetLineColor(ROOT.kRed + 1)
+        g_res.Fit(f_parab, "EMR0", "", x_fit_min, x_fit_max)
+        f_parab.SetRange(x_fit_min, x_plot_max)
+        f_parab.Draw("SAME")
+    if hres:
+        # For TGraph, extend the x-axis limits so the extrapolated parabola segment is visible.
+        # Use graph axis limits instead of the histogram frame limits, which were built from the data range only.
+        x_min_axis = min(reco_e) if reco_e else 0.0
+        x_max_axis = x_plot_max
+        # Optional user-specified x-range overrides the default
+        if residual_xrange and len(residual_xrange) == 2:
+            rx_min, rx_max = residual_xrange
+            if rx_max > rx_min:
+                x_min_axis, x_max_axis = rx_min, rx_max
+        g_res.GetXaxis().SetLimits(x_min_axis, x_max_axis)
+        # Optional user-specified y-range
+        if residual_yrange and len(residual_yrange) == 2:
+            ry_min, ry_max = residual_yrange
+            if ry_max > ry_min:
+                hres.GetYaxis().SetRangeUser(ry_min, ry_max)
+        c_res.Modified()
+        c_res.Update()
+        # If we extended the curve to extrapolate_max, print its value on the residual axis
+        if extrapolate_max > 0 and f_parab:
+            r_ext = f_parab.Eval(extrapolate_max)
+            print(f"[Residual extrapolation] At {extrapolate_max:.0f} e-: residual = {r_ext:.4f} e-")
+    # Extrapolated residual at Fe-55 X-ray line (electron-equivalent) energies
+    if f_parab:
+        e_Fe55_Ka = keV_to_electrons(FE55_KA_KEV)
+        e_Fe55_Kb = keV_to_electrons(FE55_KB_KEV)
+        r_Ka = f_parab.Eval(e_Fe55_Ka)
+        r_Kb = f_parab.Eval(e_Fe55_Kb)
+        print("")
+        print("[Residual extrapolation at Fe-55 lines]")
+        print(f"  Fe-55 K_alpha ({FE55_KA_KEV} keV = {e_Fe55_Ka:.2f} e-): residual = {r_Ka:.4f} e-")
+        print(f"  Fe-55 K_beta  ({FE55_KB_KEV} keV = {e_Fe55_Kb:.2f} e-): residual = {r_Kb:.4f} e-")
+        print("")
+    c_res.Modified()
+    c_res.Update()
+    if display:
+        c_res.Update()
+    else:
+        out_res = os.path.join(output, f"{base_tag}_nonlinearity_residual.pdf")
+        c_res.SaveAs(out_res)
+        print(f"[SAVE] {out_res}")
 
     # --- Normalized calibration: (μ - μ_0) / n_e  vs  n_e  (no fit params) ---
     c_norm = ROOT.TCanvas("c_norm", "Normalized calibration", 900, 700)
@@ -963,7 +1507,6 @@ def main(infile, inadu, root, gain, ne, de, display, cols, rows, erange, ext, ou
 
     # --- Resolution: sigma vs electron number (sigma in electrons) ---
     c_sig = ROOT.TCanvas("c_sig", "Sigma vs n_e", 900, 700)
-    ROOT.gStyle.SetOptFit(1111)
 
     y_sig = sigma
     ey_sig = e_sigma

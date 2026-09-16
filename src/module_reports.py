@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Reads module data from CSV and generates module-wise plots for CCD metrics.
 """
 Module Reports Script
 Reads module data from CSV and generates module-wise plots for CCD metrics.
@@ -10,13 +13,51 @@ import sys
 import re
 import json
 import pandas as pd
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-# Modules to exclude from plots entirely (not plotted, not in mean ± 1σ)
-# Use exact IDs as in CSV: Name column has "PD-06", "PD-07", "PD-08" (with hyphen)
-MODULES_EXCLUDED_FROM_PLOT = ['PD-06', 'PD-07', 'PD-08']
+
+def ensure_interactive_backend():
+    """Switch off Agg so plt.show() can open a GUI window (pan/zoom/axis limits)."""
+    current = matplotlib.get_backend()
+    if current and current.lower() != 'agg':
+        return current
+    for name in ('MacOSX', 'QtAgg', 'Qt5Agg', 'TkAgg'):
+        try:
+            plt.switch_backend(name)
+            return name
+        except Exception:
+            continue
+    print("Warning: no GUI matplotlib backend found; --show will not open a window.",
+          file=sys.stderr)
+    return matplotlib.get_backend()
+
+DEFAULT_MODULES_EXCLUDED_FROM_PLOT = []
+DEFAULT_EXCLUDE_FROM_MEAN = ['DM-08', 'DM-12']
+DEFAULT_OUTLIER_SIGMA = 3.0
+
+
+def outlier_modules_mad(df_pivot, n_sigma=DEFAULT_OUTLIER_SIGMA):
+    """
+    Return module IDs whose per-CCD mean is an outlier relative to other modules.
+
+    Uses median and MAD of the per-module means: a module is an outlier if
+    |mean - median| > n_sigma * 1.4826 * MAD. Those modules stay on the plot
+    but can be dropped from the ensemble Mean ± 1σ band.
+    """
+    mod_means = df_pivot.mean(axis=1).dropna()
+    if len(mod_means) < 3:
+        return []
+    values = mod_means.values.astype(float)
+    median = float(np.median(values))
+    mad = float(np.median(np.abs(values - median)))
+    sigma = 1.4826 * mad
+    if sigma <= 0:
+        return []
+    z = np.abs(values - median) / sigma
+    return [str(mid) for mid, zi in zip(mod_means.index, z) if zi > n_sigma]
 
 
 def parse_value_with_uncertainty(value):
@@ -96,13 +137,144 @@ def get_gain_metric_for_dark_current(dark_metric_name):
     Return the corresponding Gain metric name for a Dark_Current metric, or None.
     E.g. Image31_Low_Dark_Current -> Image31_Low_Gain.
     """
+    if 'Ratio' in dark_metric_name:
+        return None
     if not dark_metric_name.endswith('_Dark_Current'):
         return None
-    return dark_metric_name[:-14] + '_Gain'  # replace _Dark_Current with _Gain
+    return dark_metric_name[:-13] + '_Gain'  # replace _Dark_Current with _Gain (len("_Dark_Current")==13)
 
 
-# Factor for dark current conversion: (1/10) * 232.9 = 23.29
-DARK_CURRENT_GAIN_FACTOR = (1.0 / 10.0) * 232.9
+# Time/unit factor to e-/pix/day. Serial-binning (NSBIN) is applied separately:
+# Low-T Image 3 uses NSBIN=10; High-T Image 3 is 1x1 (NSBIN=1).
+DARK_CURRENT_TIME_FACTOR = 232.9
+LOW_DC_SERIAL_BINNING = 10
+HIGH_DC_SERIAL_BINNING = 1
+
+
+def serial_binning_for_dc_metric(metric_name):
+    """NSBIN used when converting a Dark_Current metric. None if not a DC metric."""
+    if 'Ratio' in metric_name or not metric_name.endswith('_Dark_Current'):
+        return None
+    if '_High_Dark_Current' in metric_name:
+        return HIGH_DC_SERIAL_BINNING
+    if '_Low_Dark_Current' in metric_name:
+        return LOW_DC_SERIAL_BINNING
+    return LOW_DC_SERIAL_BINNING
+
+IMAGE31_LOW_DC_METRIC = 'Image31_Low_Dark_Current'
+IMAGE31_HIGH_DC_METRIC = 'Image31_High_Dark_Current'
+IMAGE31_DC_RATIO_METRIC = 'Image31_Ratio_Low_High_Dark_Current'
+IMAGE3_LOW_DC_METRIC = 'Image3_Low_Dark_Current'
+IMAGE3_HIGH_DC_METRIC = 'Image3_High_Dark_Current'
+IMAGE3_DC_RATIO_METRIC = 'Image3_Ratio_Low_High_Dark_Current'
+
+DC_RATIO_SPECS = [
+    (IMAGE31_LOW_DC_METRIC, IMAGE31_HIGH_DC_METRIC, IMAGE31_DC_RATIO_METRIC),
+    (IMAGE3_LOW_DC_METRIC, IMAGE3_HIGH_DC_METRIC, IMAGE3_DC_RATIO_METRIC),
+]
+
+
+def apply_dark_current_conversion(df_long, df_metric, metric_name):
+    """
+    Convert Dark_Current to e-/pix/day: value * (1/gain) * (1/NSBIN) * 232.9.
+
+    NSBIN is 10 for Low (10-column serial binning) and 1 for High (1x1).
+    """
+    gain_metric = get_gain_metric_for_dark_current(metric_name)
+    if gain_metric is None:
+        return df_metric
+    nsbin = serial_binning_for_dc_metric(metric_name)
+    if nsbin is None:
+        nsbin = 1
+
+    df_metric = df_metric.copy()
+    df_metric['module_id'] = df_metric['module_id'].astype(str).str.strip()
+    df_metric['ccd_id'] = df_metric['ccd_id'].astype(str).str.strip()
+    df_gain = df_long.loc[df_long['metric_name'] == gain_metric, ['module_id', 'ccd_id', 'value']].copy()
+    if df_gain.empty:
+        print(f"    Skipping dark current conversion: no rows for gain metric '{gain_metric}'")
+        return df_metric
+
+    df_gain = df_gain.drop_duplicates(subset=['module_id', 'ccd_id'], keep='first')
+    df_gain['module_id'] = df_gain['module_id'].astype(str).str.strip()
+    df_gain['ccd_id'] = df_gain['ccd_id'].astype(str).str.strip()
+    df_gain = df_gain.rename(columns={'value': 'gain'})
+    df_gain['gain'] = pd.to_numeric(df_gain['gain'], errors='coerce')
+    df_metric = df_metric.merge(df_gain[['module_id', 'ccd_id', 'gain']], on=['module_id', 'ccd_id'], how='left')
+    gain_vals = pd.to_numeric(df_metric['gain'], errors='coerce')
+    valid = gain_vals.notna() & (gain_vals != 0)
+    scale = np.where(valid, DARK_CURRENT_TIME_FACTOR / (gain_vals.values * nsbin), np.nan)
+    vals = pd.to_numeric(df_metric['value'], errors='coerce')
+    df_metric['value'] = vals.values * scale
+    if 'uncertainty' in df_metric.columns:
+        unc = pd.to_numeric(df_metric['uncertainty'], errors='coerce')
+        df_metric['uncertainty'] = unc.values * scale
+    df_metric = df_metric.drop(columns=['gain'])
+    n_applied = int(valid.sum())
+    print(f"    Applied dark current conversion: {metric_name} * (1/{gain_metric})*(1/{nsbin})*{DARK_CURRENT_TIME_FACTOR}  ({n_applied} values)")
+    return df_metric
+
+
+def add_derived_dc_ratio_metrics(df_long):
+    """
+    Build Low/High dark-current ratio metrics from CSV pairs.
+
+    Supports Image31_* (underground) and Image3_* (surface). Both Low and High
+    are converted first, then ratio = Low / High per (module, CCD).
+    """
+    available = set(df_long['metric_name'].unique())
+    derived_names = []
+    keys = ['module_id', 'ccd_id']
+
+    for low_name, high_name, ratio_name in DC_RATIO_SPECS:
+        if low_name not in available or high_name not in available:
+            continue
+
+        df_low = apply_dark_current_conversion(df_long, df_long[df_long['metric_name'] == low_name], low_name)
+        df_high = apply_dark_current_conversion(df_long, df_long[df_long['metric_name'] == high_name], high_name)
+
+        low_cols = keys + ['value'] + (['uncertainty'] if 'uncertainty' in df_low.columns else [])
+        high_cols = keys + ['value'] + (['uncertainty'] if 'uncertainty' in df_high.columns else [])
+        left = df_low[low_cols].rename(columns={'value': 'low', 'uncertainty': 'low_unc'})
+        right = df_high[high_cols].rename(columns={'value': 'high', 'uncertainty': 'high_unc'})
+        left = left.drop_duplicates(subset=keys, keep='first')
+        right = right.drop_duplicates(subset=keys, keep='first')
+        merged = left.merge(right, on=keys, how='inner')
+
+        low_vals = pd.to_numeric(merged['low'], errors='coerce')
+        high_vals = pd.to_numeric(merged['high'], errors='coerce')
+        valid = low_vals.notna() & high_vals.notna() & (high_vals != 0)
+        merged['value'] = np.where(valid, low_vals / high_vals, np.nan)
+
+        merged['uncertainty'] = np.nan
+        if 'low_unc' in merged.columns and 'high_unc' in merged.columns:
+            low_unc = pd.to_numeric(merged['low_unc'], errors='coerce')
+            high_unc = pd.to_numeric(merged['high_unc'], errors='coerce')
+            rel = valid & low_vals.notna() & (low_vals != 0) & low_unc.notna() & high_unc.notna()
+            merged.loc[rel, 'uncertainty'] = np.abs(merged.loc[rel, 'value']) * np.sqrt(
+                (low_unc[rel] / low_vals[rel]) ** 2 + (high_unc[rel] / high_vals[rel]) ** 2
+            )
+
+        merged['metric_name'] = ratio_name
+        derived = merged[keys + ['metric_name', 'value', 'uncertainty']].copy()
+        n_ok = int(valid.sum())
+        print(f"    Derived {ratio_name}: Low/High after DC conversion ({n_ok} values)")
+        df_long = pd.concat([df_long, derived], ignore_index=True)
+        derived_names.append(ratio_name)
+
+    if not derived_names:
+        print("    Skipping DC ratio: no Image31 or Image3 Low/High Dark_Current pair found")
+    return df_long, derived_names
+
+
+def dc_plot_metrics_for_csv(available_metrics):
+    """Pick Image31 (underground) or Image3 (surface) DC plot metrics."""
+    available = set(available_metrics)
+    if IMAGE31_LOW_DC_METRIC in available and IMAGE31_HIGH_DC_METRIC in available:
+        return [IMAGE31_LOW_DC_METRIC, IMAGE31_HIGH_DC_METRIC, IMAGE31_DC_RATIO_METRIC]
+    if IMAGE3_LOW_DC_METRIC in available and IMAGE3_HIGH_DC_METRIC in available:
+        return [IMAGE3_LOW_DC_METRIC, IMAGE3_HIGH_DC_METRIC, IMAGE3_DC_RATIO_METRIC]
+    return None
 
 
 def get_metric_config(metric_name, config_file=None):
@@ -158,7 +330,38 @@ def get_metric_config(metric_name, config_file=None):
                 break
     
     # Apply metric-specific defaults based on metric name patterns
-    if 'Res' in metric_name:
+    if metric_name in (IMAGE31_LOW_DC_METRIC, IMAGE3_LOW_DC_METRIC):
+        config.setdefault('ylabel', 'Dark Current [e-/pix/day]')
+        config.setdefault('decimal_places', 4)
+        config.setdefault('value_format', '{:.4e}')
+        config['mean_format'] = '{:.4f}'
+        config.setdefault('log_scale', True)
+        config.setdefault('plot_title', 'Dark Current from 500-Skip SR Image at 135K')
+        config.setdefault('y_min', 1e-2)
+        config.setdefault('y_max', 3e1)
+        config.setdefault('dm_modules_only', True)
+    elif metric_name in (IMAGE31_HIGH_DC_METRIC, IMAGE3_HIGH_DC_METRIC):
+        config.setdefault('ylabel', 'Dark Current [e-/pix/day]')
+        config.setdefault('decimal_places', 4)
+        config.setdefault('value_format', '{:.4e}')
+        config['mean_format'] = '{:.4f}'
+        config.setdefault('log_scale', True)
+        config.setdefault('plot_title', 'Dark Current from 500-Skip SR Image at 180K')
+        config.setdefault('y_min', 1e1)
+        config.setdefault('y_max', 1e3)
+        config.setdefault('dm_modules_only', True)
+    elif 'Ratio_Low_High_Dark_Current' in metric_name:
+        config.setdefault('ylabel', 'Low / High Dark Current')
+        config.setdefault('decimal_places', 4)
+        config.setdefault('value_format', '{:.4e}')
+        config['mean_format'] = '{:.4f}'
+        config.setdefault('log_scale', True)
+        config.setdefault('line_at_1', False)
+        config.setdefault('plot_title', 'Dark Current Ratio (Low / High) from 500-Skip SR Image')
+        config.setdefault('y_min', 1e-4)
+        config.setdefault('y_max', 1e-2)
+        config.setdefault('dm_modules_only', True)
+    elif 'Res' in metric_name:
         # Resolution metrics (typically in eV)
         config.setdefault('ylabel_unit', 'eV')
         config.setdefault('decimal_places', 3)
@@ -169,10 +372,10 @@ def get_metric_config(metric_name, config_file=None):
         config.setdefault('decimal_places', 3)
         config.setdefault('value_format', '{:.3f}')
     elif 'Dark_Current' in metric_name:
-        # Dark current (typically in e-/pix/s)
-        config.setdefault('ylabel_unit', 'e-/pix/s')
-        config.setdefault('decimal_places', 2)
-        config.setdefault('value_format', '{:.2e}')
+        # Dark current after (1/gain)*(1/NSBIN)*232.9  (e-/pix/day)
+        config.setdefault('ylabel_unit', 'e-/pix/day')
+        config.setdefault('decimal_places', 4)
+        config.setdefault('value_format', '{:.4e}')
         config.setdefault('log_scale', True)
     elif 'Temp' in metric_name:
         # Temperature (typically in K or °C)
@@ -271,12 +474,18 @@ def read_and_process_data(filepath):
     parsed = df_long['value'].apply(parse_value_with_uncertainty)
     df_long['value'] = [v[0] for v in parsed]
     df_long['uncertainty'] = [v[1] for v in parsed]
+
+    df_long, derived_metrics = add_derived_dc_ratio_metrics(df_long)
+    if derived_metrics:
+        metrics = sorted(list(metrics) + derived_metrics)
     
     return df_long, metrics
 
 
 def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
-                 exclude_from_mean=None, show_module_averages=False):
+                 exclude_from_mean=None, exclude_from_plot=None, show_module_averages=False,
+                 auto_exclude_from_mean=False, outlier_sigma=DEFAULT_OUTLIER_SIGMA,
+                 show=False, log_scale=None):
     """
     Generate plots for specified metrics.
     
@@ -288,10 +497,17 @@ def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
                  Example: pattern="Image31" matches "Image31_High_Res", "Image31_Low_Gain", etc.
         config_file: Optional path to JSON file with per-metric plot configurations
         exclude_from_mean: List of module IDs to exclude from mean ± 1σ calculation (still plotted)
+        exclude_from_plot: List of module IDs to exclude entirely from plots
         show_module_averages: If True, print per-module average (mean across CCDs) to the screen
+        auto_exclude_from_mean: If True, also drop MAD-outlier modules from the mean band
+        outlier_sigma: MAD threshold used when auto_exclude_from_mean is True
+        show: If True, open each figure in an interactive matplotlib window
+        log_scale: If True, force a logarithmic y-axis
     """
     if exclude_from_mean is None:
         exclude_from_mean = []
+    if exclude_from_plot is None:
+        exclude_from_plot = []
 
     # Filter metrics if pattern provided
     # A "pattern" is a substring to match against metric names (case-insensitive)
@@ -313,6 +529,8 @@ def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
         
         # Get configuration for this metric
         config = get_metric_config(metric, config_file)
+        if log_scale:
+            config['log_scale'] = True
         
         # Filter data for this specific metric
         # A "metric" here is an exact metric name (e.g., "Image31_High_Res")
@@ -346,32 +564,23 @@ def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
                 df_metric = df_metric.drop(columns=['gain'])
                 print(f"    Applied gain correction: {metric} / {gain_metric}")
         
-        # If this is a Dark_Current metric, multiply by (1/gain)*(1/10)*232.9 when gain is available
-        gain_metric_dc = get_gain_metric_for_dark_current(metric)
-        if gain_metric_dc is not None:
-            # Use same metric_name as in long format (from column base name)
-            available_metrics = set(df_long['metric_name'].dropna().astype(str).str.strip())
-            if gain_metric_dc in available_metrics:
-                df_gain = df_long.loc[df_long['metric_name'] == gain_metric_dc, ['module_id', 'ccd_id', 'value']].copy()
-                df_gain = df_gain.drop_duplicates(subset=['module_id', 'ccd_id'], keep='first')
-                df_gain = df_gain.rename(columns={'value': 'gain'})
-                df_gain['gain'] = pd.to_numeric(df_gain['gain'], errors='coerce')
-                df_metric = df_metric.merge(df_gain, on=['module_id', 'ccd_id'], how='left')
-                # value = dark_current * (1/gain) * (1/10) * 232.9
-                gain_vals = pd.to_numeric(df_metric['gain'], errors='coerce')
-                valid = gain_vals.notna() & (gain_vals != 0)
-                scale = np.where(valid, DARK_CURRENT_GAIN_FACTOR / gain_vals.values, np.nan)
-                vals = pd.to_numeric(df_metric['value'], errors='coerce')
-                df_metric = df_metric.copy()
-                df_metric.loc[:, 'value'] = vals.values * scale
+        # For *_Dark_Current metrics: multiply by (1/gain)*(1/NSBIN)*232.9
+        # Low uses NSBIN=10; High is 1x1 (NSBIN=1). Skip derived ratio metrics.
+        if 'Ratio' not in metric:
+            df_metric = apply_dark_current_conversion(df_long, df_metric, metric)
+
+        # Exact zeros in the QC table are unfilled / failed entries, not a measured rate.
+        # Drop them so they do not appear on the log axis or pull down the mean.
+        if 'Dark_Current' in metric:
+            zero = pd.to_numeric(df_metric['value'], errors='coerce') == 0
+            if zero.any():
+                bad = df_metric.loc[zero, ['module_id', 'ccd_id']]
+                pairs = [f"{m}-{c}" for m, c in zip(bad['module_id'], bad['ccd_id'])]
+                print(f"    Treating value=0 as missing: {', '.join(pairs)}")
+                df_metric.loc[zero, 'value'] = np.nan
                 if 'uncertainty' in df_metric.columns:
-                    unc = pd.to_numeric(df_metric['uncertainty'], errors='coerce')
-                    df_metric.loc[:, 'uncertainty'] = (unc.values * scale)
-                df_metric = df_metric.drop(columns=['gain'])
-                print(f"    Applied dark current conversion: {metric} * (1/{gain_metric_dc})*(1/10)*232.9")
-            else:
-                print(f"    Skipping dark current conversion: gain metric '{gain_metric_dc}' not in data")
-        
+                    df_metric.loc[zero, 'uncertainty'] = np.nan
+         
         # Pivot to wide format for plotting (values)
         df_pivot = df_metric.pivot_table(
             index='module_id',
@@ -395,14 +604,21 @@ def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
             has_uncertainties = False
         
         # Sort modules naturally (DM-01, DM-02, ...)
-        module_order = sorted(df_pivot.index, key=lambda x: int(x.split('-')[1]) if '-' in x else 0)
+        module_order = sorted(df_pivot.index, key=lambda x: int(str(x).split('-')[1]) if '-' in str(x) else 0)
         df_pivot = df_pivot.reindex(module_order)
         # Exclude specified modules from plot
-        df_pivot = df_pivot.drop(index=MODULES_EXCLUDED_FROM_PLOT, errors='ignore')
+        if exclude_from_plot:
+            df_pivot = df_pivot.drop(index=exclude_from_plot, errors='ignore')
+        if config.get('dm_modules_only'):
+            keep = [m for m in df_pivot.index if str(m).startswith('DM-')]
+            dropped = [m for m in df_pivot.index if m not in keep]
+            if dropped:
+                print(f"    Excluding non-DM modules from plot: {', '.join(map(str, dropped))}")
+            df_pivot = df_pivot.reindex(keep)
 
         # Align uncertainty pivot with value pivot
         if df_uncertainty is not None:
-            df_uncertainty = df_uncertainty.reindex(module_order).drop(index=MODULES_EXCLUDED_FROM_PLOT, errors='ignore')
+            df_uncertainty = df_uncertainty.reindex(df_pivot.index)
         
         # Create plot with reasonable size limits (larger aspect: bigger figure, bars, text)
         scale = 1.4  # overall scale factor for figure and elements
@@ -494,7 +710,14 @@ def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
                     #        rotation=90, clip_on=True)
         
         # Calculate mean and standard deviation (optionally excluding some modules from mean only)
-        df_for_mean = df_pivot.drop(index=exclude_from_mean, errors='ignore')
+        mean_exclude = list(exclude_from_mean)
+        if auto_exclude_from_mean:
+            auto_outliers = outlier_modules_mad(df_pivot, n_sigma=outlier_sigma)
+            extra = [m for m in auto_outliers if m not in mean_exclude]
+            if extra:
+                print(f"    Auto-excluded from mean (MAD > {outlier_sigma}σ): {', '.join(extra)}")
+            mean_exclude = list(dict.fromkeys(mean_exclude + auto_outliers))
+        df_for_mean = df_pivot.drop(index=mean_exclude, errors='ignore')
         all_values = df_for_mean.values.flatten()
         all_values = all_values[~pd.isna(all_values)]  # Remove NaN values
         
@@ -502,21 +725,24 @@ def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
             mean_val = np.mean(all_values)
             std_val = np.std(all_values)
             
-            # Format mean and std for legend using config
-            if config['value_format']:
-                mean_str = config['value_format'].format(mean_val)
-                std_str = config['value_format'].format(std_val)
+            # Format mean and std for legend (mean_format wins so the legend can be
+            # more precise than bar labels / scientific notation).
+            mean_fmt = config.get('mean_format') or config.get('value_format')
+            if mean_fmt:
+                mean_str = mean_fmt.format(mean_val)
+                std_str = mean_fmt.format(std_val)
             elif config['decimal_places'] is not None:
                 mean_str = f'{mean_val:.{config["decimal_places"]}f}'
                 std_str = f'{std_val:.{config["decimal_places"]}f}'
             else:
                 # Auto-format
                 if abs(mean_val) < 0.01 or abs(mean_val) > 1000:
-                    mean_str = f'{mean_val:.2e}'
-                    std_str = f'{std_val:.2e}'
+                    mean_str = f'{mean_val:.4e}'
+                    std_str = f'{std_val:.4e}'
                 else:
-                    mean_str = f'{mean_val:.2f}'
-                    std_str = f'{std_val:.2f}'
+                    mean_str = f'{mean_val:.4f}'
+                    std_str = f'{std_val:.4f}'
+            print(f"    Mean = {mean_val:.6g}  ± 1σ = {std_val:.6g}  (legend: {mean_str})")
             
             # Add grey band for ±1 sigma (behind bars, zorder=0)
             # For log scale, ensure values are positive
@@ -546,6 +772,10 @@ def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
                     label=f"{label} Energy: {config['decay_energy']} keV"
                 )
 
+            if config.get('line_at_1'):
+                ax.axhline(y=1, color='magenta', linestyle=':', linewidth=2.5,
+                          zorder=1, label='Ratio = 1')
+
         ax.set_xlabel('Module', fontsize=30)
         ax.set_ylabel(config['ylabel'], fontsize=30)
         # Use custom title if provided, otherwise use default
@@ -554,10 +784,15 @@ def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
         else:
             plot_title = f'{metric} by Module and CCD'
         ax.set_title(plot_title, fontsize=32, fontweight='bold')
-        ax.set_xticks(x + module_spacing / 2)
+        ax.set_xticks(x)
         ax.set_xticklabels(df_pivot.index, rotation=45, ha='right', fontsize=30)
         ax.tick_params(axis='y', labelsize=30)
-        ax.legend(loc='upper left', fontsize=26, frameon=True, bbox_to_anchor=(1, 1),
+        handles, labels = ax.get_legend_handles_labels()
+        mean_idx = [i for i, lab in enumerate(labels) if lab.startswith('Mean')]
+        other_idx = [i for i in range(len(labels)) if i not in mean_idx]
+        order = mean_idx + other_idx
+        ax.legend([handles[i] for i in order], [labels[i] for i in order],
+                  loc='upper left', fontsize=26, frameon=True, bbox_to_anchor=(1, 1),
                   handlelength=2, handleheight=1.5, labelspacing=0.8, borderpad=1)
         ax.grid(True, alpha=0.3, axis='y')
         
@@ -565,11 +800,14 @@ def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
         if config['log_scale']:
             ax.set_yscale('log')
             # Set reasonable y-axis limits for log scale to prevent huge figures
-            y_min = df_pivot.min().min()
-            y_max = df_pivot.max().max()
-            if y_min > 0 and y_max > 0:
-                # Add small margins for log scale
-                ax.set_ylim(y_min * 0.5, y_max * 2.0)
+            if config.get('y_min') and config.get('y_max') is not None:
+                ax.set_ylim(config['y_min'], config['y_max'])
+            else:
+                y_min = df_pivot.min().min()
+                y_max = df_pivot.max().max()
+                if y_min > 0 and y_max > 0:
+                    # Add small margins for log scale
+                    ax.set_ylim(y_min * 0.5, y_max * 2.0)
         else:
             # For linear scale, set reasonable limits with small margin
             # y_min = df_pivot.min().min()
@@ -601,8 +839,23 @@ def plot_metrics(df_long, metrics, output_dir, pattern=None, config_file=None,
         
         # Limit DPI to prevent huge file sizes, but ensure minimum quality
         save_dpi = 150
-        plt.savefig(filepath, dpi=save_dpi, bbox_inches='tight', facecolor='white', 
-                   pad_inches=0.2)
+
+        saved = {'done': False}
+
+        def _save_current_view(_event=None):
+            if saved['done']:
+                return
+            saved['done'] = True
+            fig.savefig(filepath, dpi=save_dpi, bbox_inches='tight', facecolor='white',
+                        pad_inches=0.2)
+
+        if show:
+            print(f"    Interactive view: {metric}")
+            print("    Use the toolbar to pan/zoom. Close the window to save that view and continue.")
+            fig.canvas.mpl_connect('close_event', _save_current_view)
+            plt.show()
+        else:
+            _save_current_view()
         print(f"    Saved: {filepath}")
         plt.close()
 
@@ -626,8 +879,22 @@ def main():
                        help='Path to JSON file with per-metric plot configurations')
     parser.add_argument('--exclude-from-mean',
                        help='Comma-separated module IDs to exclude from mean ± 1σ calculation (e.g. PD-06,PD-07,PD-08)')
+    parser.add_argument('--exclude-from-plot',
+                       help='Comma-separated module IDs to exclude entirely from plots (default: none)')
+    parser.add_argument('--auto-exclude-from-mean', action='store_true',
+                       help='Exclude MAD-outlier modules from mean ± 1σ (still plotted)')
+    parser.add_argument('--no-auto-exclude-from-mean', action='store_true',
+                       help='Do not auto-exclude outlier modules from the mean')
+    parser.add_argument('--outlier-sigma', type=float, default=DEFAULT_OUTLIER_SIGMA,
+                       help=f'MAD sigma threshold for --auto-exclude-from-mean (default: {DEFAULT_OUTLIER_SIGMA})')
+    parser.add_argument('--log-scale', action='store_true',
+                       help='Use a logarithmic y-axis (already the default for Image31 DC plots)')
+    parser.add_argument('--show', action='store_true',
+                       help='Open each plot in an interactive matplotlib window (pan/zoom/axis limits). Close the window to save and continue')
     parser.add_argument('--show-module-averages', action='store_true',
                        help='Print the average value of the metric per module (mean across CCDs) to the screen')
+    parser.add_argument('--image31-dc-plots', action='store_true',
+                       help='Generate low/high dark-current and Low/High DC ratio plots (Image31 underground or Image3 surface)')
 
     args = parser.parse_args()
     
@@ -649,11 +916,21 @@ def main():
     # Determine which metrics to plot based on user input
     # --metric: User specifies exact metric name(s) (e.g., --metric Image31_High_Res)
     # --pattern: User specifies substring to match (e.g., --pattern Image31 matches all Image31 metrics)
+    # --image31-dc-plots: Image31 low DC, high DC, and derived Low/High DC ratio
+    metrics_to_plot = []
+    if getattr(args, 'image31_dc_plots', False):
+        chosen = dc_plot_metrics_for_csv(metrics)
+        if not chosen:
+            print("Error: --image31-dc-plots needs Image31_* or Image3_* Low/High Dark_Current columns",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(f"DC plots using metrics: {', '.join(chosen)}")
+        metrics_to_plot.extend(chosen)
     if args.metrics:
         # Specific metrics: exact names provided by user
         # Example: --metric Image31_High_Res --metric Image31_Low_Res
-        metrics_to_plot = args.metrics
-    elif args.pattern:
+        metrics_to_plot.extend(args.metrics)
+    elif args.pattern and not metrics_to_plot:
         # Pattern matching: find all metrics containing the pattern (case-insensitive)
         # Example: --pattern Image31 matches "Image31_High_Res", "Image31_Low_Gain", etc.
         #          --pattern Res matches all metrics with "Res" in the name
@@ -661,21 +938,45 @@ def main():
         if not metrics_to_plot:
             print(f"No metrics found matching pattern: {args.pattern}")
             return
-    else:
-        print("Error: Must specify --metric, --pattern, or --list-metrics")
+    if not metrics_to_plot:
+        print("Error: Must specify --metric, --pattern, --image31-dc-plots, or --list-metrics")
         parser.print_help()
         sys.exit(1)
     
     # Parse exclude-from-mean list
     exclude_from_mean = []
+    if getattr(args, 'image31_dc_plots', False):
+        exclude_from_mean.extend(DEFAULT_EXCLUDE_FROM_MEAN)
     if getattr(args, 'exclude_from_mean', None):
-        exclude_from_mean = [m.strip() for m in args.exclude_from_mean.split(',') if m.strip()]
+        exclude_from_mean.extend(
+            [m.strip() for m in args.exclude_from_mean.split(',') if m.strip()]
+        )
+    exclude_from_mean = list(dict.fromkeys(exclude_from_mean))
+    if exclude_from_mean:
+        print(f"Excluding from mean ± 1σ (still plotted): {', '.join(exclude_from_mean)}")
+    exclude_from_plot = []
+    if getattr(args, 'exclude_from_plot', None):
+        exclude_from_plot = [m.strip() for m in args.exclude_from_plot.split(',') if m.strip()]
+
+    auto_exclude_from_mean = bool(getattr(args, 'auto_exclude_from_mean', False))
+    if getattr(args, 'no_auto_exclude_from_mean', False):
+        auto_exclude_from_mean = False
+
+    show = bool(getattr(args, 'show', False))
+    if show:
+        backend = ensure_interactive_backend()
+        print(f"Interactive matplotlib backend: {backend}")
 
     # Generate plots
     try:
         plot_metrics(df_long, metrics_to_plot, args.output_dir, args.pattern, args.config,
                      exclude_from_mean=exclude_from_mean,
-                     show_module_averages=getattr(args, 'show_module_averages', False))
+                     exclude_from_plot=exclude_from_plot,
+                     show_module_averages=getattr(args, 'show_module_averages', False),
+                     auto_exclude_from_mean=auto_exclude_from_mean,
+                     outlier_sigma=getattr(args, 'outlier_sigma', DEFAULT_OUTLIER_SIGMA),
+                     show=show,
+                     log_scale=getattr(args, 'log_scale', False))
         print("\nDone!")
     except Exception as e:
         print(f"Error generating plots: {e}", file=sys.stderr)

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Loads an ACM image with acmpy Decoder and writes its Level-1 dataframe to CSV.
 """Load ACM image with acmpy Decoder and expose L1 dataframe (df1_view).
 
 CSV output columns (Level-1 decoded data, one row per pixel/sample):

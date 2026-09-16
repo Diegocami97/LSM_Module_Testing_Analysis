@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Combines 4 PNG images into a single 2x2 collage.
+
 import sys, glob, argparse
 from PIL import Image
 

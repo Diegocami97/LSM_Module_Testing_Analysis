@@ -1,3 +1,7 @@
+// Diego Venegas-Vargas
+// DAMIC-M Collaboration
+// Thin wrapper that sets up cfitsio linking and runs gainscan.cc via ACLiC.
+
 #include "TSystem.h"
 #include "TSystemDirectory.h"
 #include "TSystemFile.h"

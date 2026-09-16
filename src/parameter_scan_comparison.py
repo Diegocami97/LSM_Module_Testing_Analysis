@@ -1,3 +1,8 @@
+# Diego Venegas-Vargas
+# DAMIC-M Collaboration
+# Plots manually-entered Fe-55 Kalpha/Kbeta peak means vs. (module, extension)
+# across parameter-scan steps, for front and back events.
+
 import numpy as np
 import matplotlib.pyplot as plt
 
